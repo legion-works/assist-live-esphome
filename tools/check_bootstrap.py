@@ -232,5 +232,5 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        print(f"FAIL firmware bootstrap: {error}", file=sys.stderr)
+        print(f"FAIL firmware bootstrap: {error}")
         sys.exit(1)

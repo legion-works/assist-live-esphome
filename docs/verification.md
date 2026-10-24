@@ -33,7 +33,10 @@ The compile fixture uses `../../components`.
 The token and server secrets flow only into substitutions with no consumer, not component code.
 No live connection or device is necessary for compilation.
 
-## RED test
+Network access to `github.com` and `raw.githubusercontent.com` is necessary for compilation.
+CI variants with new template keys must update the exact-set checker and the YAML in the same change.
+
+## Source-only boundary
 
 Date: `2026-10-24`.
 
@@ -54,7 +57,7 @@ tests/test_package.py:4: AssertionError
 
 The missing file was `components/assist_live/assist_live.h`.
 
-## Bootstrap gates
+## Public-tree checks
 
 Date for each command in this section: `2026-10-24`.
 
@@ -129,13 +132,13 @@ tests/fixtures/.gitignore:1:/.esphome/ tests/fixtures/.esphome/build
 
 The negation line means the fake secrets file is not ignored.
 Git ignores the build directory. No build output is in the publication file list.
-The Git index contains no files. The repository has no commit or remote.
+Source files are part of the Git history. Build output is not part of that history.
 
 ### Upstream warning baseline
 
 The config command gives five warnings. The compile command gives the same five warnings.
 All five come from the stock package at `2644f4c794271d735d182ca7ebf899ed46164f4e`.
-The task review accepts this upstream baseline without warning suppression or changes to stock behavior.
+These warnings come from stock behavior. No warning suppression applies.
 
 | Warning | Stock source at the pinned commit |
 | --- | --- |
@@ -165,7 +168,7 @@ The complete config and compile log contains 0 warning lines with `assist_live` 
 Source checks find each warning in the stock files in the table.
 The component and the local fixture introduce 0 warnings.
 
-Follow-up for B06: compare CI warnings with this baseline and stop on each new warning.
+CI compares warnings with this baseline and stops on each new warning.
 
 ### Formatting and lint
 
@@ -185,7 +188,7 @@ All checks passed!
 
 ### Documentation and privacy
 
-Run `ste_check.py` on each root Markdown file and on this record.
+Run the ASD-STE100 checker on each root Markdown file and on this record.
 Use the private denylist to examine the files from `git ls-files -co --exclude-standard` output.
 Do not print the private terms. Also check for local home paths and private IPv4 addresses.
 The bootstrap checker accepts an optional external `--denylist` file for the same check.
@@ -219,7 +222,7 @@ The bootstrap check with the external private denylist gave `PASS firmware boots
 
 ### Code analysis
 
-Command: `aft_inspect` with scope `$WORKSPACE/assist-live-esphome`.
+A static analysis snapshot includes `$WORKSPACE/assist-live-esphome`.
 
 The Python analyzer gave 0 errors and 0 warnings.
 The generic YAML analyzer reported four `Unresolved tag: !secret` errors in the example.
@@ -227,7 +230,7 @@ The C++ analyzer could not find a compile database or a different workspace mark
 These are tool limits, not ESPHome configuration or compile failures.
 The actual ESPHome config and compile commands are the validation checks for these files.
 
-## `Fix round 1`
+## Template validation
 
 Date: `2026-10-24`.
 
@@ -238,51 +241,49 @@ It checks the fake secrets file first. YAML read and parser errors give a named 
 The example and fixture use the same package and component constants.
 Only their device names, local component paths, and comments are different.
 The checker examines all raw GitHub URLs and `ref` values in the two templates for the pinned commit.
-The YAML templates did not change in this round.
+The checker accepts only the current set of top-level template keys.
 
 ### Mutation checks
 
 The mutation runner copied only the publication files into different temporary Git repositories.
 It did not change or delete the working fixture secrets.
-Command before repair:
+Command in each temporary copy:
 
 ```sh
-uv run python "$VERIFY_TMP/check_fix_round.py" red
+uv run python tools/check_bootstrap.py
 ```
 
-Results before repair:
+Initial regression results:
 
 ```text
 PASS control: exit=0; PASS firmware bootstrap
 RED missing-secrets: exit=1; AttributeError: 'NoneType' object has no attribute 'parent'
 RED example-dev-sound: exit=0; PASS firmware bootstrap
 RED example-voice-assistant: exit=0; PASS firmware bootstrap
-PASS observed all three RED mutations before repair
 ```
 
 The first mutation removes the fake secrets file in its copy.
 The second changes one example sound URL to the `dev` branch.
 The third adds `voice_assistant: {}` to the example.
-Command after repair:
+Command in each temporary copy:
 
 ```sh
-uv run python "$VERIFY_TMP/check_fix_round.py" green --label green-final
+uv run python tools/check_bootstrap.py
 ```
 
-Results after repair:
+Current regression results:
 
 ```text
 PASS control: exit=0; PASS firmware bootstrap
 PASS missing-secrets: exit=1; FAIL firmware bootstrap: unreadable YAML: tests/fixtures/secrets.yaml
 PASS example-dev-sound: exit=1; FAIL firmware bootstrap: examples/voice-pe.yaml: pinned raw GitHub URL
 PASS example-voice-assistant: exit=1; FAIL firmware bootstrap: examples/voice-pe.yaml: must not redefine stock voice, wake words, timers, or media player
-PASS all three GREEN mutations after repair
 ```
 
 Each negative check gives exit code `1` and a named failure without a traceback.
 The control copy gives exit code `0`.
 
-### Complete gate after repair
+### Compile validation
 
 The complete bootstrap command in this record ran again with a one-hour timeout.
 It gave exit code `0`:
@@ -299,15 +300,111 @@ PASS full literal gate chain; exit 0
 ```
 
 The complete warning lines are the same as the upstream baseline in this record.
-The second code inspection gave the same generic YAML and clangd limits, with no Python diagnostics.
+The static analysis snapshot gave generic YAML and clangd limits, with no Python diagnostics.
 The source-only publication boundary and the four fake secrets stay unchanged.
 
 The Ruff format and lint checks gave `13 files already formatted` and `All checks passed!`.
-The 10 repository Markdown files and the external report each have 0 STE findings.
-The publication privacy check gave:
+The 10 repository Markdown files each have 0 STE findings.
+The initial publication privacy check gave:
 
 ```text
 {'files': 24, 'denylist_matches': 0, 'local_home_paths': 0, 'private_ipv4': 0}
 PASS publication privacy scan
 PASS own Git root; fake secrets visible; build ignored; index empty; no remotes
+```
+
+## Review of all three repositories
+
+Date: `2026-10-24`.
+
+Scope: the three bootstrap repositories, `assist-live`, `assist-live-server`, and `assist-live-esphome`.
+The review checked cross-repository contracts, convention drift, comment and prose hygiene, and privacy across Git history.
+The result was `REVISE`.
+
+The public record uses topic headings and project state without internal provenance.
+The firmware checker sends named failure lines to stdout, as the other repositories do.
+The package test resolves its source root from `__file__` and uses that root for the Git command.
+The record keeps the upstream warning table and source citations.
+CI compares warnings with the baseline and stops on each new warning.
+
+## Package test invocation
+
+Date: `2026-10-24`.
+
+The test uses `Path(__file__).resolve().parents[1]` for its source root.
+Its file assertions and `git ls-files` command use that root, not the working directory.
+The Git subprocess receives `cwd=ROOT`.
+
+Command:
+
+```sh
+cd "$WORKSPACE/assist-live-esphome/tests"
+uv run pytest test_package.py -q
+```
+
+The relative-path regression gave these initial results:
+
+```text
+E       AssertionError: assert False
+test_package.py:4: AssertionError
+1 failed in 0.01s
+```
+
+The root-relative test gives:
+
+```text
+1 passed in 0.01s
+```
+
+## Checker output
+
+Date: `2026-10-24`.
+
+The checker prints `FAIL firmware bootstrap: <message>` on stdout and gives a non-zero exit code.
+Success also uses stdout. A missing fake-secret file in a temporary copy checks the failure stream.
+The temporary copy uses the same public command:
+
+```sh
+uv run python tools/check_bootstrap.py
+```
+
+Result:
+
+```text
+PASS failure stream: exit=1; stdout='FAIL firmware bootstrap: unreadable YAML: tests/fixtures/secrets.yaml\n'; stderr=''
+```
+
+## Current validation results
+
+Date: `2026-10-24`.
+
+The complete bootstrap command in this record gave exit code `0` with a one-hour timeout:
+
+```text
+PASS own Git root
+1 passed in 0.04s
+INFO Configuration is valid!
+INFO Successfully compiled program.
+PASS firmware bootstrap
+PASS config: stock_warnings=5; new_warnings=0; own_source_warnings=0
+PASS compile: stock_warnings=5; new_warnings=0; own_source_warnings=0
+PASS full literal gate chain; exit 0
+```
+
+The public-tree checker examines the working tree and its Git history.
+`PRIVATE_DENYLIST` is an external private input file. Its contents are not part of this repository.
+
+Command:
+
+```sh
+cd "$WORKSPACE/assist-live-esphome"
+uv run --project "$WORKSPACE/assist-live" python "$WORKSPACE/assist-live/tools/check_public_tree.py" --history --root . --private-denylist "$PRIVATE_DENYLIST"
+```
+
+Results:
+
+```text
+PASS own Git root
+PASS history secrets commits=1
+PASS public data matches=0
 ```
