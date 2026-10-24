@@ -442,6 +442,100 @@ PASS history secrets commits=1
 PASS public data matches=0
 ```
 
+## Device loop startup
+
+Date: 2026-10-24 (UTC).
+
+The resolved startup tests first gave two failures:
+
+```sh
+uv run pytest tests/test_probe_device.py -k resolved -q
+```
+
+```text
+FAILED tests/test_probe_device.py::test_resolved_probe_keeps_stock_boot_and_starts_from_loop
+FAILED tests/test_probe_device.py::test_resolved_config_has_only_probe_additions_and_external_credentials
+2 failed, 29 deselected in 21.24s
+```
+
+The package merge put the probe start after the stock `delay: 1s` and `delay: 10min`.
+It also changed the stock startup `priority` from `375` to `-100`.
+The probe starts one time from `esphome.on_loop` at this time.
+It does not declare `esphome.on_boot`.
+The resolved startup `priority` and all stock startup steps agree with the fixture.
+
+The worker uses FreeRTOS `priority` 0 on core 0.
+ESPHome's loop uses `priority` 1 on core 1 in the dual-core Voice PE build.
+Source: ESPHome `2026.10.0`, `esphome/components/esp32/core.cpp:24-28,41-45`.
+A device test must measure the actual effect on native audio.
+
+The tests list all differences between the two resolved configurations.
+Only probe fields, external credentials, device names, build paths, and the missing placeholder component can have different values.
+The [device probe record](research/q1-device-probe.md#resolved-configuration-contract) lists each permitted field.
+
+A mutation put the start back in `on_boot` with `priority: 375`, the stock value.
+The tests found that mutation:
+
+```text
+FAILED tests/test_probe_device.py::test_probe_extends_stock_without_native_overrides
+FAILED tests/test_probe_device.py::test_resolved_probe_keeps_stock_boot_and_starts_from_loop
+FAILED tests/test_probe_device.py::test_resolved_config_has_only_probe_additions_and_external_credentials
+3 failed, 28 deselected in 18.34s
+```
+
+The source then changed back to the isolated loop start.
+The unmodified probe test run gave:
+
+```sh
+uv run pytest tests/test_probe_device.py -q
+```
+
+```text
+31 passed in 16.15s
+```
+
+The resolved tests invoke the locked ESPHome Python package.
+They use external data and build roots and can fetch the pinned public package sources.
+No different external tool or CI install step is necessary.
+Device trial: not run (no test device at this time).
+
+The loop-start firmware used a new external build root and the same fake compile-only secrets:
+
+```sh
+uv run python tools/probe_device.py stage --config tests/probes/transport.yaml \
+  --secrets "$DEVICE_SECRETS" --output "$RUNROOT/q1-config"
+ESPHOME_DATA_DIR="$RUNROOT/data" ESPHOME_BUILD_PATH="$RUNROOT/build" \
+  uv run esphome config "$RUNROOT/q1-config/transport.yaml" >"$RUNROOT/config.log" 2>&1
+ESPHOME_DATA_DIR="$RUNROOT/data" ESPHOME_BUILD_PATH="$RUNROOT/build" \
+  ESPHOME_DEFAULT_COMPILE_PROCESS_LIMIT=2 \
+  uv run esphome compile "$RUNROOT/q1-config/transport.yaml" >"$RUNROOT/compile.log" 2>&1
+uv run python tools/check_release.py --config-log "$RUNROOT/config.log" \
+  --compile-log "$RUNROOT/compile.log"
+ESPHOME_WORK_DIR="$STOCK_WORK_ROOT" UV_LINK_MODE=copy task check
+UV_PROJECT_ENVIRONMENT="$FLOOR_ENV" UV_LINK_MODE=copy \
+  uv run --locked --python 3.12 pytest tests/ -q
+```
+
+```text
+PASS probe staged; no upload or device connection
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+PASS config warnings: new_warnings=0
+INF no leaks found
+8 files already formatted
+All checks passed!
+Success: no issues found in 8 source files
+77 passed in 19.14s
+PASS firmware bootstrap
+PASS source-only release
+77 passed in 17.91s
+```
+
+Firmware revision: `sha256-c483c3d7bd2cb1e0fd2e40ce4f79b20cb7ca8791ade325ad9d200184a2087463`.
+The source output has `StartupTrigger(375.0f)` and a different `LoopTrigger` for the probe start.
+The SDK configuration output has two FreeRTOS cores.
+No upload, flash, or device connection occurred.
+
 ## Continuous checks
 
 Date: `2026-10-24`.
@@ -682,4 +776,125 @@ uv run --locked pytest tests/ -q
 before the change, Python 3.12: 1 failed, 33 passed (tests/test_release.py)
 after the change, Python 3.12: 46 passed
 after the change, Python 3.14: 46 passed
+```
+
+## Device transport probe
+
+Date: 2026-10-24 (UTC).
+
+Device trial: not run (no test device at this time).
+The probe extends the stock Voice PE package without native audio or voice replacements.
+The [device probe record](research/q1-device-probe.md) gives its event format, authentication, and subsequent device steps.
+
+The first standalone test run stopped because the result reader was not available:
+
+```sh
+uv run pytest tests/test_probe_device.py -q
+```
+
+```text
+E       ModuleNotFoundError: No module named 'tools.probe_device'
+1 failed in 0.01s
+```
+
+After implementation, the same command gave:
+
+```text
+29 passed in 0.05s
+```
+
+The tests check external file copies, necessary secrets, fixture refusal, packet authentication, replay refusal, changed boots, and recorded sample reports.
+They also check the armed command arguments without network access and the masked WebSocket frame reader.
+Host-generated sample data is not a device result.
+
+The probe used external scratch paths and obviously fake credentials for compilation only:
+
+```sh
+uv run python tools/probe_device.py stage --config tests/probes/transport.yaml \
+  --secrets "$DEVICE_SECRETS" --output "$RUNROOT/q1-config"
+ESPHOME_DATA_DIR="$RUNROOT/data" ESPHOME_BUILD_PATH="$RUNROOT/build" \
+  uv run esphome config "$RUNROOT/q1-config/transport.yaml" >"$RUNROOT/config.log" 2>&1
+ESPHOME_DATA_DIR="$RUNROOT/data" ESPHOME_BUILD_PATH="$RUNROOT/build" \
+  ESPHOME_DEFAULT_COMPILE_PROCESS_LIMIT=2 \
+  uv run esphome compile "$RUNROOT/q1-config/transport.yaml" >"$RUNROOT/compile-final.log" 2>&1
+uv run python tools/check_release.py --config-log "$RUNROOT/config.log" \
+  --compile-log "$RUNROOT/compile-final.log"
+gitleaks dir "$RUNROOT/build/assist-live-probe/src" \
+  --config .gitleaks.toml --redact --exit-code 1
+```
+
+```text
+PASS probe staged; no upload or device connection
+INFO Configuration is valid!
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+PASS config warnings: new_warnings=0
+INF no leaks found
+```
+
+ESPHome `2026.10.0` used ESP-IDF `5.5.6`.
+The compiled image and source output stayed in the external build root.
+No upload, flash, or device connection occurred.
+The compile fixture's secret file did not change.
+
+The first compile identified a missing explicit `tcp_transport` dependency.
+The next compile identified an ambiguous `socket` name after ESPHome's namespace imports.
+The probe explicitly includes the built-in transport and uses `::socket`.
+The two changes do not change the stock package.
+
+The two explicit SDK keys are correct in ESP-IDF `5.5.6`:
+
+```text
+CONFIG_WS_TRANSPORT=y
+CONFIG_LWIP_MAX_SOCKETS=15
+```
+
+The SDK configuration output contains these values.
+The [device probe record](research/q1-device-probe.md#build-configuration) gives the Kconfig sources and the socket settings.
+A device test must measure heap use and native function behavior.
+
+A clean stock-fixture compile and the first clean probe configuration gave the same CMake notices at `build.cmake:631` and `project.cmake:765`.
+The two logs also mapped the same legacy stack-memory key.
+The probe does not set that legacy key.
+The incremental probe compile gave exit code 0, with no CMake notices or compiler warnings.
+The warning checker does not check CMake notices.
+
+Repository and floor-Python gates:
+
+```sh
+ESPHOME_WORK_DIR="$RUNROOT/stock" UV_LINK_MODE=copy task check
+UV_PROJECT_ENVIRONMENT="$RUNROOT/venv312" UV_LINK_MODE=copy \
+  uv run --locked --python 3.12 pytest tests/ -q
+```
+
+```text
+8 files already formatted
+All checks passed!
+Success: no issues found in 8 source files
+75 passed in 0.53s
+PASS firmware bootstrap
+PASS source-only release
+PASS config warnings: new_warnings=0
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+INF no leaks found
+75 passed in 0.38s
+```
+
+The tests add no external command dependency.
+CI installs the pinned tools that the repository gate uses.
+
+The ASD-STE100 checker examined this record and `docs/research/q1-device-probe.md`, with 0 findings for each file.
+The privacy self-scan examined all publishable files, with 0 private-data findings.
+The public-data checker used this command:
+
+```sh
+uv run --project "$WORKSPACE/assist-live" python \
+  "$WORKSPACE/assist-live/tools/check_public_tree.py" --root . \
+  --private-denylist "$PRIVATE_DENYLIST"
+```
+
+```text
+PASS own Git root
+PASS public data matches=0
 ```
