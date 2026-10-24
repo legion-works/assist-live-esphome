@@ -1,0 +1,12 @@
+.esphome/
+*.bin
+*.elf
+*.map
+.pioenvs/
+.piolibdeps/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+secrets.yaml
+!tests/fixtures/secrets.yaml
