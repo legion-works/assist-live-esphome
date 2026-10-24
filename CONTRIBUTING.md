@@ -6,17 +6,18 @@ Keep each change small for review.
 
 ## Development
 
-Use `uv` and the checked-in lock file. Run these commands from the repository root:
+Install `uv`, Task, `actionlint`, and Gitleaks.
+Use the checked-in lock file. Run the complete check from the repository root:
 
 ```sh
 uv sync --locked
-uv run pytest tests/test_package.py -q
-uv run esphome config tests/fixtures/voice-pe.yaml
-uv run esphome compile tests/fixtures/voice-pe.yaml
-uv run python tools/check_bootstrap.py
-uvx ruff format --check .
-uvx ruff check .
+task check
 ```
+
+The mandatory `task check` command includes all format, lint, type, unit, license, source-only, configuration, compile, and secret checks.
+The default work root is `${XDG_CACHE_HOME:-$HOME/.cache}/assist-live-esphome`.
+Set `ESPHOME_WORK_DIR` to change it.
+The Taskfile sets `ESPHOME_DATA_DIR` to `<work-root>/data` and `ESPHOME_BUILD_PATH` to `<work-root>/build`.
 
 Run the documentation checker on each Markdown file that you change.
 Do not add build output or actual credentials to Git.

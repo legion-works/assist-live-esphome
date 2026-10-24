@@ -1,0 +1,20 @@
+name: Feature request
+description: Describe a component requirement.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: This project is experimental and has no release. Do not include personal data.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Proposed change
+      description: Explain the effect on stock voice functions and source licenses.
+    validations:
+      required: true

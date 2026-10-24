@@ -1,0 +1,28 @@
+name: release-please
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    # The approved release action needs release and pull-request write access.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Require publication approval
+        env:
+          APPROVED: ${{ vars.ASSIST_LIVE_RELEASES_APPROVED }}
+        run: test "$APPROVED" = 'true'
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.12'
+      - run: python tools/check_release.py --source-only
+      - uses: googleapis/release-please-action@c2a5a2bd6a758a0937f1ddb1e8950609867ed15c # v4.3.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

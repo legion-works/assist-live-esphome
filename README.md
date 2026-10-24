@@ -9,17 +9,22 @@ The stock package keeps control of voice, wake words, timers, and the media play
 
 ## Development check
 
-Install `uv`. Then run these commands from the repository root:
+Install `uv`, Task, `actionlint`, and Gitleaks.
+Run the complete check from the repository root:
 
 ```sh
 uv sync --locked
-uv run pytest tests/test_package.py -q
-uv run esphome config tests/fixtures/voice-pe.yaml
-uv run esphome compile tests/fixtures/voice-pe.yaml
-uv run python tools/check_bootstrap.py
+task check
 ```
 
+The default work root is `${XDG_CACHE_HOME:-$HOME/.cache}/assist-live-esphome`.
+Set `ESPHOME_WORK_DIR` to change it.
+The Taskfile sets `ESPHOME_DATA_DIR` to `<work-root>/data` and `ESPHOME_BUILD_PATH` to `<work-root>/build`.
+The check includes compilation and secret checks of the source output and the repository.
+
 The lock file selects ESPHome `2026.10.0`.
+The supported-version matrix contains only ESPHome `2026.10.0`.
+This compile check is not a hardware compatibility claim.
 
 The first compile downloads the build tools and external dependencies.
 A device or a live server connection is not necessary for the compile.

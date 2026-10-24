@@ -1,0 +1,23 @@
+name: release-artifacts
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require publication approval
+        env:
+          APPROVED: ${{ vars.ASSIST_LIVE_RELEASES_APPROVED }}
+        run: test "$APPROVED" = 'true'
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.12'
+      - name: Check source archive without publication
+        run: |
+          git archive --format=tar.gz --prefix=assist-live-esphome/ HEAD -o "$RUNNER_TEMP/source.tar.gz"
+          python tools/check_release.py --source-only "$RUNNER_TEMP/source.tar.gz"

@@ -7,7 +7,39 @@ license = "GPL-3.0-or-later"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest", "esphome==2026.10.0"]
+dev = [
+    "pytest==9.1.1",
+    "esphome==2026.10.0",
+    "ruff==0.14.2",
+    "mypy==1.18.2",
+    "types-PyYAML==6.0.12.20250915",
+]
 
 [tool.uv]
 package = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["tools", "tests", "components"]
+check_untyped_defs = true
+warn_unused_ignores = true
+no_implicit_optional = true
+explicit_package_bases = true
+follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = ["esphome.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = ["error"]

@@ -136,19 +136,44 @@ Source files are part of the Git history. Build output is not part of that histo
 
 ### Upstream warning baseline
 
-The config command gives five warnings. The compile command gives the same five warnings.
-All five come from the stock package at `2644f4c794271d735d182ca7ebf899ed46164f4e`.
-These warnings come from stock behavior. No warning suppression applies.
+The configuration command gives five warnings from stock Voice PE `26.9.0`.
+Its commit is `2644f4c794271d735d182ca7ebf899ed46164f4e`.
+The earlier five-warning compile count came from an incremental build, not a clean build.
+A clean build adds 19 compiler warning lines from eight third-party diagnostics.
+No warning suppression applies.
 
-| Warning | Stock source at the pinned commit |
-| --- | --- |
-| Missing `synchronous=` on `voice_kit.flash` | `esphome/components/voice_kit/__init__.py:142-145` |
-| GPIO0 strapping pin | `home-assistant-voice.yaml:293` |
-| GPIO3 strapping pin | `home-assistant-voice.yaml:523` |
-| Deprecated `rgb_order` | `home-assistant-voice.yaml:595` |
-| GPIO45 strapping pin | `home-assistant-voice.yaml:992` |
+Counts below refer to one clean compile and one subsequent incremental compile.
+Compiler source paths are relative to the named component.
 
-Complete warning text for each command:
+| Component and version | Source | Warning | Clean count | Incremental count |
+| --- | --- | --- | --- | --- |
+| Voice PE `26.9.0` | `esphome/components/voice_kit/__init__.py:142-145` | Missing `synchronous=` on `voice_kit.flash` | 1 | 1 |
+| Voice PE `26.9.0` | `home-assistant-voice.yaml:293` | GPIO0 strapping pin | 1 | 1 |
+| Voice PE `26.9.0` | `home-assistant-voice.yaml:523` | GPIO3 strapping pin | 1 | 1 |
+| Voice PE `26.9.0` | `home-assistant-voice.yaml:595` | Deprecated `rgb_order` | 1 | 1 |
+| Voice PE `26.9.0` | `home-assistant-voice.yaml:992` | GPIO45 strapping pin | 1 | 1 |
+| `esphome/micro-opus` `0.4.1` | `silk/NLSF2A.c:54` | `cos_LSF_QA`, `-Wmaybe-uninitialized` | 2 | 0 |
+| `espressif/esp-tflite-micro` `1.3.3~1` | `tensorflow/lite/kernels/internal/reference/mul.h:150` | `params`, `-Wshadow` | 3 | 0 |
+| `espressif/esp-tflite-micro` `1.3.3~1` | `tensorflow/lite/kernels/internal/reference/mul.h:209` | `params`, `-Wshadow` | 3 | 0 |
+| `espressif/esp-tflite-micro` `1.3.3~1` | `tensorflow/lite/kernels/internal/reference/mul.h:249` | `params`, `-Wshadow` | 3 | 0 |
+| `espressif/esp-tflite-micro` `1.3.3~1` | `tensorflow/lite/kernels/internal/reference/sub.h:264` | `params`, `-Wshadow` | 2 | 0 |
+| `espressif/esp-tflite-micro` `1.3.3~1` | `tensorflow/lite/kernels/internal/reference/sub.h:284` | `params`, `-Wshadow` | 2 | 0 |
+| `espressif/esp-tflite-micro` `1.3.3~1` | `tensorflow/lite/kernels/internal/reference/sub.h:308` | `params`, `-Wshadow` | 2 | 0 |
+| `espressif/esp-tflite-micro` `1.3.3~1` | `tensorflow/lite/kernels/internal/reference/sub.h:420` | `params`, `-Wshadow` | 2 | 0 |
+
+The compiler version sources are in the clean build's `dependencies.lock`:
+
+- `dependencies.esphome/micro-opus.version`, lines `93-102`: `0.4.1`.
+- `dependencies.espressif/esp-tflite-micro.version`, lines `124-137`: `1.3.3~1`.
+
+The managed-component manifests give those same versions:
+
+- `managed_components/esphome__micro-opus/idf_component.yml:13`.
+  Its `repository_info.commit_sha` at line `10` is `8354085908683c6130e32a832aeec8a7ca115c51`.
+- `managed_components/espressif__esp-tflite-micro/idf_component.yml:19`.
+  Its `repository_info.commit_sha` at line `16` is `78e5532e682d3863a3c2985c3a74eed0a9ebaa61`.
+
+Complete configuration warning text:
 
 ```text
 WARNING register_action('voice_kit.flash', ...) is missing the synchronous= parameter. Defaulting to synchronous=False (safe but prevents StringRef optimization). Check the C++ class: use synchronous=False if play_next_() is deferred to a callback, timer, or loop(); use synchronous=True if play_next_() always runs before the initial play/play_complex call returns
@@ -164,27 +189,35 @@ Attaching external pullup/down resistors to strapping pins can cause unexpected 
 See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
 ```
 
-The complete config and compile log contains 0 warning lines with `assist_live` or `fixtures/voice-pe.yaml`.
-Source checks find each warning in the stock files in the table.
-The component and the local fixture introduce 0 warnings.
+The configuration and clean-compile logs contain 0 warnings from `components/assist_live/` or the local fixture.
+The compiler baseline uses the component name, component-relative path, source line, warning flag, and complete message.
+The same text from local component, fixture, or example lines stops the check.
 
-CI compares warnings with this baseline and stops on each new warning.
+A new third-party warning after an upstream change stops CI and must have a reviewed baseline update.
+The stock package's moving `dev` fetch can cause such changes.
 
 ### Formatting and lint
 
-Commands:
+Date: `2026-10-24`.
+
+`task check` is the mandatory gate.
+It uses the project Ruff configuration and locked development tools.
+Its format and lint commands are:
 
 ```sh
-uvx ruff format --check .
-uvx ruff check .
+uv run ruff format --check .
+uv run ruff check .
 ```
 
 Results:
 
 ```text
-13 files already formatted
+6 files already formatted
 All checks passed!
 ```
+
+The earlier bootstrap state used unpinned `uvx ruff` commands.
+Those commands are not the current gate.
 
 ### Documentation and privacy
 
@@ -313,13 +346,13 @@ PASS publication privacy scan
 PASS own Git root; fake secrets visible; build ignored; index empty; no remotes
 ```
 
-## Review of all three repositories
+## Cross-repository checks
 
 Date: `2026-10-24`.
 
 Scope: the three bootstrap repositories, `assist-live`, `assist-live-server`, and `assist-live-esphome`.
-The review checked cross-repository contracts, convention drift, comment and prose hygiene, and privacy across Git history.
-The result was `REVISE`.
+Checks examined shared contracts, conventions, comments, documentation, and privacy across Git history.
+The public record uses project state, and the firmware checker uses named stdout failures.
 
 The public record uses topic headings and project state without internal provenance.
 The firmware checker sends named failure lines to stdout, as the other repositories do.
@@ -374,7 +407,7 @@ Result:
 PASS failure stream: exit=1; stdout='FAIL firmware bootstrap: unreadable YAML: tests/fixtures/secrets.yaml\n'; stderr=''
 ```
 
-## Current validation results
+## Bootstrap validation results
 
 Date: `2026-10-24`.
 
@@ -408,3 +441,217 @@ PASS own Git root
 PASS history secrets commits=1
 PASS public data matches=0
 ```
+
+## Continuous checks
+
+Date: `2026-10-24`.
+
+`task check` runs the locked tool install, format check, lint, type check, unit tests,
+bootstrap checks, source-only checks, configuration validation, compile, and secret checks.
+The lint rules are `E`, `F`, `W`, `I`, `B`, and `UP`. All rule sets apply.
+The Python target is `3.12`, from the ESPHome metadata above.
+
+The supported-version matrix contains only ESPHome `2026.10.0`.
+A second version must compile correctly before it goes into the matrix.
+No hardware compatibility claim follows from this compile check.
+
+The first release-check test gave this failure:
+
+```sh
+cd "$WORKSPACE/assist-live-esphome"
+uv run pytest tests/test_release.py -q
+```
+
+```text
+E       ModuleNotFoundError: No module named 'tools'
+1 failed in 0.04s
+```
+
+The pytest configuration adds the repository root to the import path.
+
+### GitHub Actions pins
+
+Each pin came from `gh api repos/OWNER/REPO/git/ref/tags/TAG`.
+Each tag below points directly to a commit, not an annotated tag.
+
+| Action | Tag | Commit |
+| --- | --- | --- |
+| `actions/checkout` | `v4.3.1` | `34e114876b0b11c390a56381ad16ebd13914f8d5` |
+| `actions/setup-python` | `v6.1.0` | `83679a892e2d95755f2dac6acb0bfd1e9ac5d548` |
+| `astral-sh/setup-uv` | `v7.1.2` | `85856786d1ce8acfbcc2f13a5f3fbd6b938f9f41` |
+| `go-task/setup-task` | `v1.0.0` | `0ab1b2a65bc55236a3bc64cde78f80e20e8885c2` |
+| `actions/cache` | `v4.3.0` | `0057852bfaa89a56745cba8c7296529d2fc39830` |
+| `googleapis/release-please-action` | `v4.3.0` | `c2a5a2bd6a758a0937f1ddb1e8950609867ed15c` |
+
+The workflow downloads use SHA-256 checks from the GitHub release API asset metadata.
+The commands were `gh api repos/gitleaks/gitleaks/releases/tags/v8.30.0`
+and `gh api repos/rhysd/actionlint/releases/tags/v1.7.12`.
+
+| Archive | SHA-256 |
+| --- | --- |
+| `gitleaks_8.30.0_linux_x64.tar.gz` | `79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e` |
+| `actionlint_1.7.12_linux_amd64.tar.gz` | `8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8` |
+
+### Build directories and secret checks
+
+ESPHome `2026.10.0` reads `ESPHOME_BUILD_PATH` and `ESPHOME_DATA_DIR`.
+The first sets the build parent directory. The second sets the data directory.
+Sources:
+
+- `esphome/core/config.py:500-503` in ESPHome `2026.10.0`.
+- `esphome/core/__init__.py:829-833` in ESPHome `2026.10.0`.
+- <https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/config.py>
+- <https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/__init__.py>
+
+The upstream tag points to `704551a6c93c29a311802f7ee97d67a9e9bce718`.
+The Taskfile uses a stable external cache directory, not the repository.
+`ESPHOME_WORK_DIR` can change its root.
+The default is `${XDG_CACHE_HOME:-$HOME/.cache}/assist-live-esphome`.
+
+CI uses the runner temporary directory.
+The cache key includes the ESPHome version, the lock file, and the fixture files.
+It includes PlatformIO downloads, the ESP-IDF tools cache, and ESPHome data.
+The compile check keeps network access to GitHub and `raw.githubusercontent.com`.
+
+`gitleaks dir .` examines Git-ignored directories.
+The initial check found 54 results in downloaded upstream source in the previous build tree.
+Those results came from libsodium, noise-c, and WebSocket example private keys.
+It found no fake fixture value in the C++ source output.
+The previous build tree stays in an external directory.
+
+After each correct compile, Gitleaks checks the `src` output directory explicitly.
+It then checks the complete repository directory.
+No rule ignores a directory or a full file.
+Default Gitleaks rules stay enabled.
+The custom fixture rule ignores only four specified fake values, each at the fixture path.
+A different Wi-Fi password at that path stops the check, also with low entropy.
+
+### Warning checks and source archives
+
+The log checker compares structured warnings with the configuration and compiler entries above.
+It removes ANSI codes and timestamps before it compares messages.
+The FAQ continuation URL is not a different warning.
+A URL with `-warning-` does not stop the gate.
+A new `WARNING` message or compiler diagnostic stops the gate.
+The log must also contain the configuration or compile success line.
+
+The source-only gate checks `git ls-files -co --exclude-standard` and supplied release archives.
+It refuses compiled suffixes, ELF headers, ESP image headers, and compiled files in archives.
+The source-archive workflow makes a source archive in the runner temporary directory.
+It checks that archive and uploads nothing.
+
+Release workflows run only through manual dispatch.
+Their first step stops unless `ASSIST_LIVE_RELEASES_APPROVED` is `true`.
+The operator sets this repository `variable` only after explicit publication approval.
+Only the release `job` has write access.
+The project has no release. No workflow ran on GitHub during these local checks.
+
+`ci-complete` has a dependency on all other `jobs` and runs with `always()`.
+Its tests parse the workflow and run its actual gate command.
+Failure, cancellation, or a skipped `job` stops the necessary check.
+
+Mutation results in an isolated source copy:
+
+```text
+PASS mutation renamed ESP image: exit=1
+PASS mutation fixture password: exit=1; leaks=1
+PASS mutation new compile warning: exit=1
+PASS mutation changed baseline message: exit=1
+PASS workflow source archive: checked without publication
+```
+
+### Clean-build warnings
+
+The baseline comes from a clean build in a new external build root.
+Before compilation, `test ! -e "$ESPHOME_WORK_DIR"` gave exit code `0`.
+`CCACHE_DISABLE=1` disabled the compiler cache.
+The toolchain downloads stayed in their initial cache.
+The compile gave 19 third-party compiler warning lines, plus five configuration warnings:
+
+- `silk/NLSF2A.c:54` gives two `-Wmaybe-uninitialized` warnings about `cos_LSF_QA`.
+- `reference/mul.h:150,209,249` gives nine `-Wshadow` warnings about `params`.
+- `reference/sub.h:264,284,308,420` gives eight `-Wshadow` warnings about `params`.
+
+The build root comes from the external `ESPHOME_WORK_DIR` value.
+The check command copied the clean-build log to `clean-compile.log` before a second `task compile` command.
+The second compile used the same build root.
+The check command copied that log to `incremental-compile.log`.
+
+Commands:
+
+```sh
+cd "$WORKSPACE/assist-live-esphome"
+export CCACHE_DISABLE=1
+uv run pytest tests/test_release.py -q && task check && uv run python tools/check_release.py --source-only && gitleaks dir . --redact --exit-code 1
+uv run python tools/check_release.py --compile-log "$ESPHOME_WORK_DIR/clean-compile.log"
+uv run python tools/check_release.py --compile-log "$ESPHOME_WORK_DIR/incremental-compile.log"
+```
+
+Results:
+
+```text
+PASS fresh build root absent; compiler cache disabled
+34 passed in 0.17s
+6 files already formatted
+All checks passed!
+Success: no issues found in 6 source files
+45 passed in 0.82s
+PASS firmware bootstrap
+PASS source-only release
+PASS config warnings: new_warnings=0
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+PASS source-only release
+PASS clean-compile.log: config_warnings=5 compiler_warnings=19 new_warnings=0
+PASS incremental-compile.log: config_warnings=5 compiler_warnings=0 new_warnings=0
+```
+
+The complete chain gave exit code `0`.
+The warning check accepted the clean-build log and the incremental-build log.
+Gitleaks examined the `src` output and the repository directory, with no findings.
+The unchanged-text local-source tests and the changed-message mutation checks stop the gate as intended.
+
+### Release version source
+
+Date: `2026-10-24`.
+
+The release configuration uses the Python strategy and the root `pyproject.toml`.
+Its `[project].version` and `.release-please-manifest.json` each contain `0.0.0`.
+No `version.txt` file is necessary.
+The project is experimental and has no release.
+
+The pinned release action's `package-lock.json` selects release-please `17.1.2`.
+Source key: `packages["node_modules/release-please"].version`.
+That version's tag points to `5d62849f23940e3dc1dd08beb2732792c2f6ea0e`.
+The Python strategy reads `pyproject.toml` and selects its `[project]` table.
+Its updater changes the `version` value in that table, not a new version file.
+
+Sources:
+
+- `src/strategies/python.ts:84-97` in release-please `17.1.2`.
+- `src/updaters/python/pyproject-toml.ts:51-72` in release-please `17.1.2`.
+- <https://github.com/googleapis/release-please/blob/5d62849f23940e3dc1dd08beb2732792c2f6ea0e/src/strategies/python.ts>
+- <https://github.com/googleapis/release-please/blob/5d62849f23940e3dc1dd08beb2732792c2f6ea0e/src/updaters/python/pyproject-toml.ts>
+
+The configuration test checks that the strategy's version source is a file and agrees with the release manifest.
+With the simple strategy, its first run stopped because `version.txt` was missing:
+
+```text
+assert version_file.is_file()
+E       AssertionError: assert False
+1 failed in 0.02s
+```
+
+The development group uses `pytest==9.1.1`, the version from the bootstrap lock file.
+No test or dependency requirement made the lower `8.4.2` version necessary.
+The lock file and complete test suite use that version.
+
+Verification results:
+
+```text
+pytest 9.1.1
+46 passed in 0.46s
+```
+
+The subsequent complete gate uses a warm incremental firmware compile.
+The earlier clean-build and incremental-build baseline logs stay unchanged.

@@ -1,0 +1,76 @@
+version: '3'
+
+vars:
+  WORK_ROOT:
+    sh: 'printf "%s" "${ESPHOME_WORK_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/assist-live-esphome}"'
+
+env:
+  UV_LINK_MODE: copy
+  ESPHOME_DATA_DIR: '{{.WORK_ROOT}}/data'
+  ESPHOME_BUILD_PATH: '{{.WORK_ROOT}}/build'
+  ESPHOME_DEFAULT_COMPILE_PROCESS_LIMIT: '2'
+
+tasks:
+  check:
+    desc: Run all mandatory firmware checks
+    cmds:
+      - uv sync --locked
+      - task: lint
+      - task: typecheck
+      - task: unit
+      - task: bootstrap
+      - task: source-only
+      - task: config
+      - task: compile
+      - task: secrets
+
+  lint:
+    cmds:
+      - uv run ruff format --check .
+      - uv run ruff check .
+      - actionlint
+
+  typecheck:
+    cmds:
+      - uv run mypy
+
+  unit:
+    cmds:
+      - uv run pytest -q
+
+  bootstrap:
+    cmds:
+      - uv run python tools/check_bootstrap.py
+
+  source-only:
+    cmds:
+      - uv run python tools/check_release.py --source-only
+
+  config:
+    cmds:
+      - mkdir -p "{{.WORK_ROOT}}"
+      - |
+        if uv run esphome config tests/fixtures/voice-pe.yaml >"{{.WORK_ROOT}}/config.log" 2>&1; then
+          uv run python tools/check_release.py --config-log "{{.WORK_ROOT}}/config.log"
+        else
+          tail -80 "{{.WORK_ROOT}}/config.log"
+          exit 1
+        fi
+
+  compile:
+    cmds:
+      - mkdir -p "{{.WORK_ROOT}}"
+      - |
+        if uv run esphome compile tests/fixtures/voice-pe.yaml >"{{.WORK_ROOT}}/compile.log" 2>&1; then
+          tail -20 "{{.WORK_ROOT}}/compile.log"
+        else
+          tail -80 "{{.WORK_ROOT}}/compile.log"
+          exit 1
+        fi
+      - test -f "{{.WORK_ROOT}}/build/assist-live-compile-test/src/main.cpp"
+      - gitleaks dir "{{.WORK_ROOT}}/build/assist-live-compile-test/src" --config .gitleaks.toml --redact --exit-code 1
+      - uv run python tools/check_release.py --compile-log "{{.WORK_ROOT}}/compile.log"
+
+  secrets:
+    cmds:
+      - gitleaks dir . --redact --exit-code 1

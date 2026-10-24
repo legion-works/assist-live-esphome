@@ -1,0 +1,35 @@
+title = "assist-live-esphome secret checks"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "esphome-fixture-secret"
+description = "Refuse changes to fake ESPHome compile credentials"
+path = '''^tests/fixtures/secrets\.yaml$'''
+regex = '''(?m)^(?:wifi_ssid|wifi_password|assist_live_device_token|assist_live_server):\s*([^\r\n]+)$'''
+secretGroup = 1
+
+[[rules.allowlists]]
+condition = "AND"
+paths = ['''^tests/fixtures/secrets\.yaml$''']
+regexTarget = "secret"
+regexes = ['''^test-network$''']
+
+[[rules.allowlists]]
+condition = "AND"
+paths = ['''^tests/fixtures/secrets\.yaml$''']
+regexTarget = "secret"
+regexes = ['''^test-password-not-valid$''']
+
+[[rules.allowlists]]
+condition = "AND"
+paths = ['''^tests/fixtures/secrets\.yaml$''']
+regexTarget = "secret"
+regexes = ['''^test-device-token-not-valid$''']
+
+[[rules.allowlists]]
+condition = "AND"
+paths = ['''^tests/fixtures/secrets\.yaml$''']
+regexTarget = "secret"
+regexes = ['''^assist-live-server\.invalid$''']

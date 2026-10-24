@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a component or compile failure.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include actual credentials, device names, addresses, or recordings.
+  - type: input
+    id: versions
+    attributes:
+      label: ESPHome version and source commit
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use fake values in a minimal configuration.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Remove personal data and credentials from logs.
+      render: text
+    validations:
+      required: true
