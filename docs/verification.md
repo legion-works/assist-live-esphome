@@ -655,3 +655,31 @@ pytest 9.1.1
 
 The subsequent complete gate uses a warm incremental firmware compile.
 The earlier clean-build and incremental-build baseline logs stay unchanged.
+
+## Archive probe on Python 3.12
+
+Date: 2026-10-24 (UTC).
+
+The first hosted CI run used Python 3.12. One unit test gave a failure:
+
+```text
+FAILED tests/test_release.py::test_source_passes_and_failures_are_collected
+'component.cpp: unreadable archive (ReadError)'
+```
+
+On Python 3.12, `zipfile.is_zipfile` does not put the stream back at offset 0.
+`tarfile.is_tarfile` then read from the end of the stream.
+It identified a source file as a tar archive.
+On Python 3.14, `zipfile.is_zipfile` puts the stream back at offset 0, so the local test run did not show the problem.
+The release checker gives each archive probe its own stream at this time.
+
+```sh
+uv run --locked --python 3.12 pytest tests/ -q
+uv run --locked pytest tests/ -q
+```
+
+```text
+before the change, Python 3.12: 1 failed, 33 passed (tests/test_release.py)
+after the change, Python 3.12: 46 passed
+after the change, Python 3.14: 46 passed
+```

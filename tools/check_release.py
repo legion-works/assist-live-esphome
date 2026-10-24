@@ -102,8 +102,10 @@ def check_content(name: str, data: bytes, depth: int = 0) -> list[str]:
     if data.startswith((b"\x7fELF", b"\xe9", b"UF2\n")) or data[4096:4097] == b"\xe9":
         failures.append(f"{name}: compiled image magic")
     stream = io.BytesIO(data)
-    is_zip = zipfile.is_zipfile(stream)
-    is_tar = tarfile.is_tarfile(stream)
+    # Python 3.12 zipfile.is_zipfile does not restore the stream position.
+    # Each probe gets its own stream, so tarfile.is_tarfile reads from offset 0.
+    is_zip = zipfile.is_zipfile(io.BytesIO(data))
+    is_tar = tarfile.is_tarfile(io.BytesIO(data))
     archive_suffix = name.lower().endswith((".zip", ".tar", ".tar.gz", ".tgz"))
     if not (is_zip or is_tar or archive_suffix):
         return failures
