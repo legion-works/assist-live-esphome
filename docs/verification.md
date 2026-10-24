@@ -898,3 +898,46 @@ uv run --project "$WORKSPACE/assist-live" python \
 PASS own Git root
 PASS public data matches=0
 ```
+
+## Trial identity and server boot windows
+
+Date: 2026-10-24 (UTC).
+
+The device probe record gives different rules for trial identity and production server boot windows.
+One trial uses one boot of one firmware revision. The trial reader rejects a change during that trial.
+The production server accepts a new boot identifier as a new sequence and a new clock window.
+Source: `docs/design.md` in the `legion-works/assist-live` repository.
+Its device event section states: "A new boot ID starts a new sequence and clock window."
+The server-side transport probe must test post-restart events.
+
+The record and code comments also include the `ready` handshake exemption.
+The handshake does not consume the first measurement's `(boot_id, seq 0)` pair or set the trial identity.
+Python parsing ignores comments. The Python syntax tree agrees with `HEAD`.
+Runtime behavior did not change.
+
+```sh
+ESPHOME_WORK_DIR="$STOCK_WORK_ROOT" UV_LINK_MODE=copy task check
+UV_PROJECT_ENVIRONMENT="$FLOOR_ENV" UV_LINK_MODE=copy \
+  uv run --locked --python 3.12 pytest tests/ -q
+```
+
+```text
+8 files already formatted
+All checks passed!
+Success: no issues found in 8 source files
+77 passed in 12.07s
+PASS firmware bootstrap
+PASS source-only release
+PASS config warnings: new_warnings=0
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+INF no leaks found
+77 passed in 12.46s
+```
+
+The ASD-STE100 checker gave 0 findings for each of the two changed Markdown files.
+The public-data checker gave `PASS public data matches=0`.
+The privacy self-scan gave 0 denylist, local-path, and private-address findings.
+`git diff --check` gave exit code 0.
+
+Device trial: not run (no test device at this time).

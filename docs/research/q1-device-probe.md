@@ -72,8 +72,25 @@ Trial 0 identifies the numbered events. Trials 1 to 10 identify reconnect operat
 
 HMAC-SHA256 calculates the tag from all bytes before the last separator.
 The external `assist_live_device_token` is the key. The token itself is not an event field.
-The receiver checks the tag, run, transport, device fields, and sequence range.
-It refuses duplicate boot/sequence pairs and a changed boot or revision during a trial.
+The trial reader checks the tag, run, transport, device fields, and sequence range.
+It refuses duplicate measurement boot/sequence pairs.
+
+The trial reader rejects a boot identifier or firmware revision change during a trial.
+One trial must contain measurements from one boot of one firmware revision.
+This measurement rule is not the production server's event protocol rule.
+
+The production server accepts an authenticated new boot identifier as a new sequence and a new clock window.
+It continues to refuse incorrect tags and duplicate boot/sequence pairs.
+Source: `docs/design.md` in the `legion-works/assist-live` repository.
+Its device event section states: "A new boot ID starts a new sequence and clock window."
+The server-side transport probe must test post-restart events with a new boot identifier.
+It must check acceptance of the new sequence and a new clock window.
+
+The `ready` handshake and the first UDP measurement share `(boot_id, seq 0)`.
+The `ready` check stops before measurement collection and does not add the packet's pair to the replay set.
+It does not set the trial identity or count a measurement for that handshake.
+This probe-only exemption keeps sequence 0 available for the first measurement.
+Tag, transport, and replay checks apply before the `ready` exemption.
 
 Unit tests change signed fields, send events again, and send a different boot identifier.
 Out-of-order unique events stay available for the order measurement.

@@ -150,8 +150,11 @@ class EvidenceReader:
             key = (event["boot_id"], event["seq"])
             if event["transport"] != transport or key in self.seen:
                 raise ValueError("replay or incorrect transport")
+            # Trial rule: one measurement uses one boot of one firmware revision.
+            # The server accepts new boot windows (assist-live docs/design.md).
             if self.identity is not None and self.identity != identity:
                 raise ValueError("device restart or changed firmware during trial")
+            # ready is not a measurement and does not reserve (boot_id, 0).
             if event["stage"] == "ready":
                 return False
             base = 0 if transport == "udp" else 1010
