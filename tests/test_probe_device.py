@@ -206,6 +206,18 @@ def flatten_config(value, prefix=""):
 def test_resolved_config_has_only_probe_additions_and_external_credentials(
     resolved_configs,
 ):
+    from tools.check_bootstrap import check_preserved
+
+    production, stock_probe = resolved_configs
+    for section in stock_probe:
+        if section not in {
+            "substitutions",
+            "esphome",
+            "wifi",
+            "external_components",
+            "esp32",
+        }:
+            check_preserved(stock_probe[section], production[section])
     fixture, probe = (flatten_config(config) for config in resolved_configs)
     only_fixture = set(fixture) - set(probe)
     only_probe = set(probe) - set(fixture)
@@ -223,6 +235,17 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
         "external_components[2].refresh",
         "esphome.includes",
         "esp32.framework.advanced.include_builtin_idf_components",
+        "assist_live.device",
+        "assist_live.hmac_key",
+        "assist_live.media_player_id",
+        "assist_live.port",
+        "assist_live.server",
+        "assist_live.transport",
+        "micro_wake_word.on_wake_word_detected.then[1].assist_live.emit_event.data",
+        "micro_wake_word.on_wake_word_detected.then[1].assist_live.emit_event.id",
+        "micro_wake_word.on_wake_word_detected.then[1].assist_live.emit_event.stage",
+        "voice_assistant.on_end.then[5].lambda",
+        "voice_assistant.on_start.then[1].lambda",
     }
     assert only_probe == {
         "substitutions.probe_revision",

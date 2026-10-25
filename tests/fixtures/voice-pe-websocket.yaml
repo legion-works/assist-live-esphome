@@ -1,0 +1,5 @@
+# Compile only. Do not flash this fixture.
+packages:
+  telemetry: !include voice-pe.yaml
+assist_live:
+  transport: websocket

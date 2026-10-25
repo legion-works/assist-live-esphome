@@ -38,7 +38,9 @@ jobs:
       - run: uv sync --locked
         env:
           UV_LINK_MODE: copy
-      - run: task lint typecheck unit bootstrap source-only secrets
+      - name: Require the system C++ compiler
+        run: c++ --version
+      - run: task lint typecheck unit vectors bootstrap source-only secrets
 
   compile:
     runs-on: ubuntu-latest
@@ -92,7 +94,9 @@ jobs:
         run: |
           test "$(uv run --locked esphome version)" = "Version: $EXPECTED"
           uv run --locked python tools/check_release.py --toolchain
-      - run: task config compile compile-probe secrets
+      - name: Compile UDP and WebSocket timing variants
+        run: task config compile
+      - run: task compile-probe secrets
 
   ci-complete:
     runs-on: ubuntu-latest

@@ -41,6 +41,8 @@ FAKE_SECRETS = {
     "wifi_password": "test-password-not-valid",
     "assist_live_device_token": "test-device-token-not-valid",
     "assist_live_server": "assist-live-server.invalid",
+    "assist_live_device": "satellite-compile-test",
+    "assist_live_hmac_key": "000102030405060708090a0b0c0d0e0f" * 2,
 }
 ARTIFACT_SUFFIXES = {".bin", ".elf", ".map", ".o", ".a", ".so", ".pyc", ".uf2"}
 
@@ -61,6 +63,60 @@ def secret_reference(loader, node):
 
 
 TemplateLoader.add_constructor("!secret", secret_reference)
+
+
+def lambda_reference(loader, node):
+    return loader.construct_scalar(node)
+
+
+TemplateLoader.add_constructor("!lambda", lambda_reference)
+
+
+def check_secret_names(values):
+    require(set(values) == set(FAKE_SECRETS), "exact fixture secret names")
+    require(values == FAKE_SECRETS, "exact fake fixture secret values")
+
+
+def check_preserved(stock, current):
+    if isinstance(stock, dict):
+        require(isinstance(current, dict), "stock mapping removed")
+        for key, value in stock.items():
+            require(key in current, "stock field removed")
+            check_preserved(value, current[key])
+    elif isinstance(stock, list):
+        require(
+            isinstance(current, list) and len(current) >= len(stock),
+            "stock list removed",
+        )
+        for before, after in zip(stock, current, strict=False):
+            check_preserved(before, after)
+    else:
+        require(stock == current, "stock value changed")
+
+
+def compare_example(fixture, example):
+    expected = {**fixture}
+    if "substitutions" in fixture:
+        expected["substitutions"] = {
+            **fixture["substitutions"],
+            "test_device": "assist-live-example",
+        }
+        expected["external_components"] = [
+            STOCK_COMPONENT,
+            {
+                "source": {"type": "local", "path": "../components"},
+                "components": ["assist_live"],
+            },
+        ]
+        expected["assist_live"] = {
+            **fixture["assist_live"],
+            "transport": example["assist_live"]["transport"],
+        }
+        require(
+            example["assist_live"]["transport"] in {"udp", "websocket"},
+            "example transport",
+        )
+    require(expected == example, "example has an undocumented difference")
 
 
 def load_checked(path):
@@ -107,12 +163,60 @@ def check_template(name, local_path, test_device):
             "wifi",
             "external_components",
             "assist_live",
+            "micro_wake_word",
+            "voice_assistant",
         },
         f"{name}: must not redefine stock voice, wake words, timers, or media player",
     )
     check_pins(template, name)
     require(
         template["packages"] == STOCK_PACKAGE, f"{name}: stock Voice PE package pin"
+    )
+    require(
+        template["micro_wake_word"]
+        == {
+            "on_wake_word_detected": [
+                {
+                    "assist_live.emit_event": {
+                        "id": "assist_live_component",
+                        "stage": "wake_detected",
+                    }
+                }
+            ]
+        },
+        f"{name}: append only the wake event",
+    )
+    require(
+        template["voice_assistant"]
+        == {
+            "on_start": [
+                {"lambda": "id(assist_live_component).command_stream_start();"}
+            ],
+            "on_end": [{"lambda": "id(assist_live_component).command_stream_end();"}],
+        },
+        f"{name}: append only the command callbacks",
+    )
+    require(
+        set(template["assist_live"])
+        == {"id", "device", "hmac_key", "server", "transport", "media_player_id"},
+        f"{name}: exact telemetry fields",
+    )
+    for field_name, secret in (
+        ("device", "assist_live_device"),
+        ("hmac_key", "assist_live_hmac_key"),
+        ("server", "assist_live_server"),
+    ):
+        require(
+            template["assist_live"][field_name] == ("!secret", secret),
+            f"{name}: external {field_name}",
+        )
+    require(
+        template["assist_live"]["media_player_id"] == "external_media_player",
+        f"{name}: stock media player",
+    )
+    require(
+        template["assist_live"]["transport"] in {"udp", "websocket"},
+        f"{name}: explicit transport",
     )
     require(
         template["external_components"]
@@ -187,28 +291,14 @@ def main():
     header = (ROOT / "components/assist_live/assist_live.h").read_text()
     require("class AssistLiveComponent : public Component" in header, "component class")
     require("namespace assist_live" in header, "component namespace")
-    require(
-        load_checked(ROOT / "tests/fixtures/secrets.yaml") == FAKE_SECRETS,
-        "exactly four fake fixture secrets",
-    )
+    check_secret_names(load_checked(ROOT / "tests/fixtures/secrets.yaml"))
     fixture = check_template(
         "tests/fixtures/voice-pe.yaml", "../../components", "assist-live-compile-test"
     )
     example = check_template(
         "examples/voice-pe.yaml", "../components", "assist-live-example"
     )
-    expected_example = {
-        **fixture,
-        "substitutions": {
-            **fixture["substitutions"],
-            "test_device": "assist-live-example",
-        },
-        "external_components": example["external_components"],
-    }
-    require(
-        example == expected_example,
-        "examples/voice-pe.yaml: only device name and local path differ from fixture",
-    )
+    compare_example(fixture, example)
     tracked = git_output("ls-files", "-z").split("\0")
     require(
         not any(

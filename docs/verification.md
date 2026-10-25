@@ -1247,3 +1247,136 @@ The different Python 3.12 command gave `129 passed in 15.84s`.
 Six changes to the installation policy, manifest check, version checks, and check order each made a selected test stop with a failure.
 The stock fixture and probe each compiled from a new build tree with CMake `3.30.2` and 0 new warnings.
 No hosted run of this change occurred at this time.
+
+## Authenticated firmware timing
+
+Date: `2026-10-25` (UTC).
+
+The server protocol is the authority for encoding. See [Device timing events](protocol.md) for configuration and signal limits.
+The firmware fixture is a byte-identical copy of the server vectors.
+
+The initial vector test gave this result:
+
+```text
+ModuleNotFoundError: No module named 'tests.event_vectors'
+1 failed in 0.01s
+```
+
+Commands:
+
+```sh
+uv run --locked pytest tests/ -q
+ESPHOME_WORK_DIR="$CHECK_TMP" task check
+UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT="$CHECK_TMP/venv312" uv run --locked --python 3.12 pytest tests/ -q
+```
+
+The complete gate gave exit code 0 with these result lines:
+
+```text
+11 files already formatted
+All checks passed!
+Success: no issues found in 11 source files
+141 passed in 62.94s (0:01:02)
+141 passed in 65.67s (0:01:05)
+PASS
+PASS
+PASS firmware bootstrap
+PASS source-only release
+PASS config warnings: new_warnings=0
+PASS config warnings: new_warnings=0
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+PASS probe staged; no upload or device connection
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+INF no leaks found
+INF 7 commits scanned.
+INF no leaks found
+```
+
+The two production compiles select UDP and WebSocket explicitly.
+The different Python 3.12 command gave `141 passed in 60.86s (0:01:00)`.
+`actionlint` gave exit code 0. The warning rules for pinned upstream components did not change.
+
+Vector-copy commands:
+
+```sh
+cmp "$SERVER_SOURCE/protocol/device-vectors.json" tests/fixtures/device-vectors.json
+sha256sum "$SERVER_SOURCE/protocol/device-vectors.json" tests/fixtures/device-vectors.json
+uv run --locked python -m tests.event_vectors
+```
+
+`cmp` gave exit code 0. The two SHA-256 values were:
+
+```text
+b74cf28042f22e9bd85520a864f335e0f61fddbd99559ce458f78cd5b540bc89
+```
+
+The native command gave two `PASS` lines.
+It compiles the actual codec and component code with the system C++ compiler.
+A missing compiler gives a named failure, not a skip.
+The vector harness checks all bytes at the HMAC input and the tag at the output.
+The pinned ESP-IDF mbedTLS function supplies HMAC-SHA256 in firmware.
+The native test does not test the ESP-IDF hash function on a device.
+
+Native simulations check boot changes, increasing sequences, overflow drops, worker failure, DNS caching, retry, and transport output.
+The timestamp lambda reads two different device times at two calls.
+The configuration checks keep all stock components and all stock callback steps unchanged.
+Only the listed telemetry steps append to the stock wake and command callbacks.
+The media-player callback adds to the stock callback list.
+
+### Credential output
+
+The component uses a `_DeviceKey` value with a masked `repr`, `str`, and type-specific YAML representation.
+Only code generation reads its private bytes.
+Usual and `--show-secrets` configuration tests for the two transports find no complete fake HMAC key in stdout or stderr.
+Other value types keep their previous YAML output.
+
+Native log capture for the two variants gave `secret_matches=0` for the fake key canary and its hexadecimal text.
+A negative compile test shows that the C++ key buffer has `protected` access.
+It has no getter, entity, or diagnostic field.
+Fixture credentials are public fake values. The checks used no actual device credential.
+
+The firmware must contain the key. A search of `main.cpp` is not a check for safe key storage.
+Keep all build output private and do not publish firmware images.
+The stock ESPHome password display can keep bytes between terminal control codes after package loading.
+This upstream limit does not change the component's HMAC-key rule. See the source URLs in `docs/protocol.md`.
+
+### Behavioral mutations
+
+Each mutation compiled and then caused a test failure:
+
+1. Remove `stage` from the signed bytes: canonical-byte assertion failure.
+2. Use little-endian integers: canonical-byte assertion failure.
+3. Restart the sequence without a new boot identifier: increasing-sequence assertion failure.
+4. Use host time as device time: monotonic-time assertion failure.
+5. Wait on a full send queue: zero-wait assertion failure.
+6. Print the key: secret-canary output assertion failure.
+7. Mark a media-player proxy as measured: playback-quality assertion failure.
+
+All seven mutations compiled before the behavioral test.
+
+Device trial not run: no test device at this time.
+The `mic_open` source is the public `voice_assistant.on_start` proxy, not a first-packet measurement.
+The device trial must measure its interval to the actual command-audio stream start.
+Transport selection, sample-callback validation, and native-function latency measurements stay open.
+
+### Public source checks
+
+Command:
+
+```sh
+uv run --project "$WORKSPACE/assist-live" python "$WORKSPACE/assist-live/tools/check_public_tree.py" --root . --private-denylist "$PRIVATE_DENYLIST" --history
+```
+
+Result:
+
+```text
+PASS own Git root
+PASS history secrets commits=7
+PASS public data matches=0
+```
+
+A source check also gave `denylist_matches=0`, `home_path_matches=0`, and `private_ipv4_matches=0` across 69 public files.

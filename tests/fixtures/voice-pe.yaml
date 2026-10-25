@@ -50,3 +50,20 @@ external_components:
 
 assist_live:
   id: assist_live_component
+  device: !secret assist_live_device
+  hmac_key: !secret assist_live_hmac_key
+  server: !secret assist_live_server
+  transport: udp
+  media_player_id: external_media_player
+
+micro_wake_word:
+  on_wake_word_detected:
+    - assist_live.emit_event:
+        id: assist_live_component
+        stage: wake_detected
+
+voice_assistant:
+  on_start:
+    - lambda: id(assist_live_component).command_stream_start();
+  on_end:
+    - lambda: id(assist_live_component).command_stream_end();

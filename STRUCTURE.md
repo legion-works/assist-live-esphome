@@ -2,11 +2,19 @@
 
 | Path | Purpose |
 | --- | --- |
-| `components/assist_live/` | Python schema and C++ placeholder component |
+| `components/assist_live/` | Python schema, authenticated event codec, and bounded timing sender |
 | `examples/voice-pe.yaml` | Local-source example that extends the stock Voice PE package |
 | `tests/test_package.py` | Source-only boundary test |
 | `tests/fixtures/voice-pe.yaml` | Compile-only configuration |
-| `tests/fixtures/secrets.yaml` | Four fake values for the compile fixture |
+| `tests/fixtures/secrets.yaml` | Six fake values for the compile fixtures |
+| `tests/fixtures/voice-pe-udp.yaml` | Explicit UDP compile variant |
+| `tests/fixtures/voice-pe-websocket.yaml` | Explicit WebSocket compile variant |
+| `tests/fixtures/device-vectors.json` | Byte-identical server authentication vectors |
+| `tests/event_vectors.py` | System C++ compiler runner for codec and runtime harnesses |
+| `tests/test_event_vectors.py` | Codec, runtime, compiler, and automation checks |
+| `tests/native/event_vectors.cpp` | HMAC input, canonical-byte, and wire-output contract harness |
+| `tests/native/event_runtime.cpp` | Queue, sequence, DNS, callback, and log simulation |
+| `tests/native/include/` | Minimal SDK test doubles for the native runtime harness |
 | `tests/probes/transport.yaml` | Device-trial configuration that extends stock Voice PE |
 | `tests/probes/transport_probe.h` | Authenticated UDP and WebSocket probe worker |
 | `tests/native/start_guard.cpp` | Native harness for the actual worker start function and its three mutations |
@@ -19,6 +27,7 @@
 | `docs/research/q1-device-trial.events.jsonl` | Decoded measurements with trial identifiers. No file before a trial |
 | `tools/check_bootstrap.py` | Source, package, license, and privacy checks |
 | `docs/verification.md` | Test commands, results, and source URLs |
+| `docs/protocol.md` | Server-contract URL, credential rules, and firmware signal limits |
 | `pyproject.toml` | Python requirements and development dependencies |
 | `uv.lock` | Locked Python dependency versions |
 | `LICENSE` | Full GPL version 3 text |

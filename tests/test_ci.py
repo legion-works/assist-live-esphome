@@ -85,7 +85,18 @@ def test_release_guard_fails_closed(name: str) -> None:
             assert run.returncode == (0 if value == "true" else 1)
 
 
-def test_fixture_secret_change_stops_scan(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "original",
+    [
+        "test-network",
+        "test-password-not-valid",
+        "test-device-token-not-valid",
+        "assist-live-server.invalid",
+        "satellite-compile-test",
+        "000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f",
+    ],
+)
+def test_fixture_secret_change_stops_scan(tmp_path: Path, original: str) -> None:
     target = tmp_path / "tests/fixtures"
     target.mkdir(parents=True)
     shutil.copyfile(ROOT / ".gitleaks.toml", tmp_path / ".gitleaks.toml")
@@ -93,11 +104,7 @@ def test_fixture_secret_change_stops_scan(tmp_path: Path) -> None:
     shutil.copyfile(ROOT / "tests/fixtures/secrets.yaml", fixture)
     for changed in (False, True):
         if changed:
-            fixture.write_text(
-                fixture.read_text().replace(
-                    "test-password-not-valid", "different-value"
-                )
-            )
+            fixture.write_text(fixture.read_text().replace(original, "different-value"))
         result = subprocess.run(
             ["gitleaks", "dir", ".", "--redact", "--exit-code", "1"],
             cwd=tmp_path,
@@ -198,3 +205,21 @@ def test_cmake_is_forced_and_checked_before_each_build():
     assert runs.index("check_release.py --toolchain") < runs.index(
         "task config compile"
     )
+
+
+def test_ci_runs_native_vectors_and_both_transport_compiles():
+    tasks = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]
+    assert {"task": "vectors"} in tasks["check"]["cmds"]
+    assert tasks["vectors"]["cmds"] == ["uv run --locked python -m tests.event_vectors"]
+    for name in ("config", "compile"):
+        command = "\n".join(tasks[name]["cmds"])
+        assert "for transport in udp websocket" in command
+        assert "tests/fixtures/voice-pe-$transport.yaml" in command
+        assert f"check_release.py --{name}-log" in command
+    workflow = load_workflow("ci.yml")["jobs"]
+    checks = "\n".join(step.get("run", "") for step in workflow["checks"]["steps"])
+    assert "c++ --version" in checks and "unit vectors" in checks
+    compile_steps = "\n".join(
+        step.get("run", "") for step in workflow["compile"]["steps"]
+    )
+    assert "task config compile" in compile_steps
