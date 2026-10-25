@@ -50,3 +50,29 @@ def test_preservation_gate_refuses_undocumented_changes(change):
     else:
         with pytest.raises(ValueError, match="example"):
             compare_example({"wifi": {"power_save_mode": "none"}}, {"wifi": {}})
+
+
+def test_production_templates_do_not_require_the_probe_token():
+    from tools.check_bootstrap import load_checked
+
+    for name in ("examples/voice-pe.yaml", "tests/fixtures/voice-pe.yaml"):
+        assert (
+            "assist_live_device_token" not in load_checked(ROOT / name)["substitutions"]
+        )
+
+
+def test_example_comparison_refuses_unused_probe_token():
+    from tools.check_bootstrap import compare_example, load_checked
+
+    fixture = load_checked(ROOT / "tests/fixtures/voice-pe.yaml")
+    example = load_checked(ROOT / "examples/voice-pe.yaml")
+    fixture["substitutions"]["assist_live_device_token"] = (
+        "!secret",
+        "assist_live_device_token",
+    )
+    example["substitutions"]["assist_live_device_token"] = (
+        "!secret",
+        "assist_live_device_token",
+    )
+    with pytest.raises(ValueError, match="probe token"):
+        compare_example(fixture, example)

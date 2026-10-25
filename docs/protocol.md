@@ -22,7 +22,8 @@ Set `assist_live_hmac_key` to the hexadecimal device secret from the server cred
 The firmware decodes its 64 hexadecimal characters into 32 key bytes.
 
 Do not use the different integration-access token as this key.
-The legacy `assist_live_device_token` fixture value is for the different transport probe, not this component.
+Only the trial probe uses `assist_live_device_token`.
+That token is not necessary for the production example.
 
 Set `assist_live_server` to an IPv4 address or a host name.
 The worker resolves host names to IPv4 addresses, not the audio callback or the ESPHome loop.
@@ -44,7 +45,7 @@ Build output contains the key and the Wi-Fi password. A text search cannot alway
 Keep C++ build output, logs with secrets enabled, and firmware images private.
 Do not publish them. The key has no getter, entity, or diagnostic field.
 
-The configuration dump prints only the transport and the drop count.
+The configuration dump prints the transport, drop count, and sender initialization failure count.
 The `_DeviceKey` value prints only `[redacted]`, with or without `--show-secrets`.
 Its YAML representation applies only to that value type.
 
@@ -88,7 +89,24 @@ Code generation sorts JSON object keys, keeps UTF-8, and refuses non-finite valu
 
 The automation cannot claim `quality: measured`.
 Only the different sample hook supplies that quality.
-C++ callers must supply compact, sorted JSON and run on the ESPHome main loop.
+
+C++ callers must run on the ESPHome main loop. `command_stream_end` can also run on the API task.
+The turn guard uses an atomic state change because the API task can close a turn.
+The sender worker parses `data`, sorts object keys, and compares the canonical bytes with the input.
+It drops and counts malformed JSON, duplicate keys, and non-canonical values before signing.
+Only JSON strings can contain whitespace.
+
+Metadata can contain strings, null, booleans, 64-bit integers, objects, and arrays.
+The maximum nesting depth is eight. Do not use floating-point metadata.
+Python and ArduinoJson use different float formats. The configuration validator applies the same restrictions.
+JSON parsing stays in the worker, not the audio path.
+
+A sender initialization failure increments a different counter and writes a warning without packet or key bytes.
+The worker retries initialization after five seconds. It drops events during that interval.
+The two transport variants use this retry rule.
+
+The public-data check runs in `task check` and CI. It examines private paths, private addresses, and Git history.
+An external `PRIVATE_DENYLIST` is optional. An unset value gives `NOT CHECKED private denylist`.
 
 Each start uses eight hardware-RNG bytes for a new boot identifier.
 One sequence increases for all events in that boot, with dropped events.

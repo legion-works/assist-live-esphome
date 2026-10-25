@@ -2,7 +2,6 @@
 import argparse
 import io
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -14,7 +13,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CMAKE_VERSION = "3.30.2"
-IDF_VERSION = "5.5.6"
 COMPILED_SUFFIXES = {".bin", ".elf", ".map", ".uf2", ".img", ".hex"}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 WARNING_LEVEL = re.compile(
@@ -95,11 +93,27 @@ CMAKE_BASELINE = {
 }
 
 
-def resolve_cmake() -> Path:
+def read_fixture_idf_version(
+    lock_path: Path = ROOT / "tests/fixtures/dependencies.lock",
+) -> str:
+    try:
+        idf_version = yaml.safe_load(lock_path.read_text())["dependencies"]["idf"][
+            "version"
+        ]
+        if not isinstance(idf_version, str) or not re.fullmatch(
+            r"\d+\.\d+\.\d+", idf_version
+        ):
+            raise ValueError("invalid IDF version")
+    except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError) as error:
+        raise ValueError("fixture IDF dependency lock missing or invalid") from error
+    return idf_version
+
+
+def resolve_cmake(lock_path: Path = ROOT / "tests/fixtures/dependencies.lock") -> Path:
     from esphome.espidf.framework import check_esp_idf_install, get_framework_env
 
-    targets = None if os.environ.get("CI") else ["esp32s3"]
-    framework, python_env = check_esp_idf_install(IDF_VERSION, targets=targets)
+    idf_version = read_fixture_idf_version(lock_path)
+    framework, python_env = check_esp_idf_install(idf_version, targets=["esp32s3"])
     manifest = json.loads((framework / "tools/tools.json").read_text())
     recommended = [
         version["name"]
@@ -121,6 +135,8 @@ def resolve_cmake() -> Path:
 
 
 def check_cmake_toolchain() -> bool:
+    executable = None
+    version = "unknown"
     try:
         executable = resolve_cmake()
         result = subprocess.run(
@@ -138,7 +154,10 @@ def check_cmake_toolchain() -> bool:
                 f"CMake toolchain mismatch: expected {CMAKE_VERSION}, found {version}"
             )
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f"FAIL CMake toolchain: {error}")
+        print(
+            f"FAIL CMake toolchain: path={executable or 'unresolved'} "
+            f"version={version} error={error}"
+        )
         return False
     print(f"PASS CMake toolchain: version={CMAKE_VERSION}")
     return True
@@ -162,6 +181,14 @@ def read_build_cmake(build_root: Path) -> tuple[str, str]:
 
 def check_component_versions(build_root: Path) -> list[str]:
     failures = []
+    try:
+        actual_idf = yaml.safe_load((build_root / "dependencies.lock").read_text())[
+            "dependencies"
+        ]["idf"]["version"]
+        if actual_idf != read_fixture_idf_version():
+            failures.append("fixture IDF version mismatch: compiled dependency lock")
+    except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError):
+        failures.append("cannot read fixture IDF baseline version source")
     for version, source in sorted(
         set(COMPILER_BASELINE.values()) | set(CMAKE_BASELINE.values())
     ):

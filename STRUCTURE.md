@@ -21,6 +21,10 @@
 | `tests/test_probe_device.py` | Probe, external file copy, and measurement tests |
 | `tools/probe_device.py` | External file copy and bounded receiver for device trials |
 | `tools/check_release.py` | Source-only boundary and build-warning checks |
+| `tests/fixtures/dependencies.lock` | ESP-IDF version for the CMake preflight |
+| `tools/check_public_tree.py` | Public-data checks for source and Git history |
+| `tests/test_public_tree.py` | Private-path, private-address, and optional denylist checks |
+| `LICENSES/Apache-2.0.txt` | License for the public-data checker |
 | `tests/test_release.py` | Image detection and warning-baseline tests |
 | `docs/research/q1-device-probe.md` | Device probe procedure and sources |
 | `docs/research/q1-device-trial.md` | Output from an armed run. No file before a trial |

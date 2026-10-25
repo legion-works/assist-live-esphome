@@ -226,7 +226,6 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
     }
     assert only_fixture == {
         "substitutions.test_device",
-        "substitutions.assist_live_device_token",
         "substitutions.assist_live_server",
         "assist_live.id",
         "external_components[2].source.type",

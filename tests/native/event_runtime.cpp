@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "assist_live.cpp"
+#include <barrier>
 #include <cassert>
 #include <iostream>
+#include <thread>
 
 using namespace esphome::assist_live;
 class Resolver : public AddressResolver {
@@ -73,6 +75,19 @@ int main() {
   int received = recv(receiver, datagram, sizeof(datagram), MSG_DONTWAIT);
   assert(received == static_cast<int>(packet.size()) &&
          std::string(datagram, received) == packet);
+  {
+    UdpSender recovering(udp_endpoint);
+    fail_socket_attempts = 1;
+    auto before = test_socket_calls;
+    assert(!recovering.send(packet) &&
+           recovering.initialization_failures() == 1);
+    assert(!recovering.send(packet) && test_socket_calls == before + 1);
+    test_time_us += 5000000;
+    assert(recovering.send(packet) && test_socket_calls == before + 2);
+    assert(recv(receiver, datagram, sizeof(datagram), MSG_DONTWAIT) ==
+           static_cast<int>(packet.size()));
+    test_time_us = 123456789000;
+  }
   close(receiver);
 #ifdef USE_ASSIST_LIVE_WEBSOCKET
   Resolver ws_resolver;
@@ -88,6 +103,24 @@ int main() {
   assert(!sender->send(packet) && ws_resolver.calls == 1);
   test_time_us += 5000000;
   assert(sender->send(packet) && ws_resolver.calls == 2);
+  {
+    WebSocketSender recovering(ws_endpoint);
+    fail_tcp_attempts = 1;
+    auto before = test_tcp_calls;
+    assert(!recovering.send(packet) &&
+           recovering.initialization_failures() == 1);
+    assert(!recovering.send(packet) && test_tcp_calls == before + 1);
+    test_time_us += 5000000;
+    assert(recovering.send(packet) && test_tcp_calls == before + 2);
+  }
+  {
+    WebSocketSender recovering(ws_endpoint);
+    fail_ws_attempts = 1;
+    assert(!recovering.send(packet) &&
+           recovering.initialization_failures() == 1);
+    test_time_us += 5000000;
+    assert(recovering.send(packet));
+  }
   test_connect_result = -1;
   test_time_us = 123456789000;
 #endif
@@ -186,4 +219,63 @@ int main() {
   EmitEventAction<std::string> automation(&component);
   automation.play(std::string("synthetic-wake"));
   assert(component.take().stage == Stage::WAKE_DETECTED);
+  TestComponent invalid;
+  invalid.setup();
+  for (const char *data :
+       {"{broken}", "[]", "{\"z\":1,\"a\":2}", "{\"a\":1,\"a\":2}",
+        "{\"a\": 1}", "{\"a\":1.0}", "{\"a\":NaN}", "{\"a\":-0}"}) {
+    assert(!valid_event_data(data));
+    invalid.emit_event(Stage::WAKE_DETECTED, 1, data);
+  }
+  auto dns_before = test_dns_calls;
+  invalid.drain_worker();
+  assert(invalid.dropped_events() == 8 && test_dns_calls == dns_before);
+  assert(valid_event_data("{\"a\":\"é\",\"b\":[null,true,2],\"z\":1}"));
+  assert(!valid_event_data("{\"a\":\"\xc0\xaf\"}"));
+  assert(valid_event_data("{\"n\":-9223372036854775808}"));
+  assert(valid_event_data("{\"n\":18446744073709551615}"));
+  assert(!valid_event_data("{\"n\":18446744073709551616}"));
+  std::string nested = "null";
+  for (int i = 0; i < 8; ++i)
+    nested = "[" + nested + "]";
+  nested = "{\"a\":" + nested + "}";
+  assert(!valid_event_data(nested.c_str()));
+
+  TestComponent concurrent;
+  concurrent.setup();
+  std::barrier phase(2);
+  auto turns = [&](int index) {
+    for (uint64_t turn = 0; turn < 100; ++turn) {
+      phase.arrive_and_wait();
+      concurrent.command_stream_start();
+      phase.arrive_and_wait();
+      if (index == 0) {
+        auto event = concurrent.take();
+        assert(event.stage == Stage::MIC_OPEN && event.seq == turn);
+        assert(concurrent.empty());
+      }
+      phase.arrive_and_wait();
+      concurrent.command_stream_end();
+      phase.arrive_and_wait();
+    }
+  };
+  std::thread first_thread(turns, 0), second_thread(turns, 1);
+  first_thread.join();
+  second_thread.join();
+  assert(concurrent.dropped_events() == 0);
+
+  TestComponent initialization_failure;
+  initialization_failure.set_hmac_key(key);
+  initialization_failure.set_device("anonymous-satellite");
+  initialization_failure.setup();
+#ifdef USE_ASSIST_LIVE_WEBSOCKET
+  initialization_failure.set_websocket(true);
+  fail_tcp_attempts = 1;
+#else
+  fail_socket_attempts = 1;
+#endif
+  initialization_failure.emit_event(Stage::WAKE_DETECTED, 1);
+  initialization_failure.drain_worker();
+  assert(initialization_failure.sender_initialization_failures() == 1);
+  initialization_failure.dump_config();
 }

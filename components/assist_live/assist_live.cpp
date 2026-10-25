@@ -3,15 +3,19 @@
 
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "esphome/components/json/json_util.h"
 #include "esphome/core/log.h"
 #include "freertos/task.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
 #include "mbedtls/md.h"
+#include <algorithm>
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
 #include <memory>
+#include <string_view>
+#include <vector>
 #ifdef USE_ASSIST_LIVE_WEBSOCKET
 #include "esp_transport_tcp.h"
 #include "esp_transport_ws.h"
@@ -21,6 +25,136 @@ namespace esphome {
 namespace assist_live {
 
 static const char *const TAG = "assist_live";
+
+static bool valid_utf8(std::string_view text) {
+  for (size_t i = 0; i < text.size();) {
+    uint8_t first = static_cast<uint8_t>(text[i++]);
+    if (first < 0x80)
+      continue;
+    unsigned continuation = first >= 0xc2 && first <= 0xdf   ? 1
+                            : first >= 0xe0 && first <= 0xef ? 2
+                            : first >= 0xf0 && first <= 0xf4 ? 3
+                                                             : 0;
+    if (continuation == 0 || i + continuation > text.size())
+      return false;
+    uint32_t codepoint = first & ((1U << (6 - continuation)) - 1);
+    for (unsigned j = 0; j < continuation; ++j) {
+      uint8_t next = static_cast<uint8_t>(text[i++]);
+      if ((next & 0xc0) != 0x80)
+        return false;
+      codepoint = (codepoint << 6) | (next & 0x3f);
+    }
+    if ((continuation == 1 && codepoint < 0x80) ||
+        (continuation == 2 && codepoint < 0x800) ||
+        (continuation == 3 && codepoint < 0x10000) ||
+        (codepoint >= 0xd800 && codepoint <= 0xdfff) || codepoint > 0x10ffff)
+      return false;
+  }
+  return true;
+}
+
+static void canonical_string(JsonString value, std::string &output) {
+  static const char HEX[] = "0123456789abcdef";
+  output += '"';
+  for (size_t i = 0; i < value.size(); ++i) {
+    uint8_t c = static_cast<uint8_t>(value.c_str()[i]);
+    switch (c) {
+    case '"':
+      output += "\\\"";
+      break;
+    case '\\':
+      output += "\\\\";
+      break;
+    case '\b':
+      output += "\\b";
+      break;
+    case '\f':
+      output += "\\f";
+      break;
+    case '\n':
+      output += "\\n";
+      break;
+    case '\r':
+      output += "\\r";
+      break;
+    case '\t':
+      output += "\\t";
+      break;
+    default:
+      if (c < 0x20) {
+        output += "\\u00";
+        output += HEX[c >> 4];
+        output += HEX[c & 15];
+      } else
+        output += static_cast<char>(c);
+    }
+  }
+  output += '"';
+}
+
+static bool canonical_value(JsonVariantConst value, std::string &output,
+                            unsigned depth) {
+  if (depth > 8)
+    return false;
+  if (value.is<JsonObjectConst>()) {
+    std::vector<JsonPairConst> pairs;
+    for (JsonPairConst pair : value.as<JsonObjectConst>())
+      pairs.push_back(pair);
+    std::sort(pairs.begin(), pairs.end(), [](JsonPairConst a, JsonPairConst b) {
+      return std::string_view(a.key().c_str(), a.key().size()) <
+             std::string_view(b.key().c_str(), b.key().size());
+    });
+    output += '{';
+    bool first = true;
+    for (JsonPairConst pair : pairs) {
+      if (!first)
+        output += ',';
+      first = false;
+      canonical_string(pair.key(), output);
+      output += ':';
+      if (!canonical_value(pair.value(), output, depth + 1))
+        return false;
+    }
+    output += '}';
+  } else if (value.is<JsonArrayConst>()) {
+    output += '[';
+    bool first = true;
+    for (JsonVariantConst child : value.as<JsonArrayConst>()) {
+      if (!first)
+        output += ',';
+      first = false;
+      if (!canonical_value(child, output, depth + 1))
+        return false;
+    }
+    output += ']';
+  } else if (value.is<JsonString>()) {
+    canonical_string(value.as<JsonString>(), output);
+  } else if (value.isNull() || value.is<bool>() || value.is<int64_t>() ||
+             value.is<uint64_t>()) {
+    std::string scalar;
+    serializeJson(value, scalar);
+    output += scalar;
+  } else {
+    // The server and ArduinoJson use different float formats.
+    return false;
+  }
+  return true;
+}
+
+static bool valid_event_data(const char *data) {
+  if (data == nullptr)
+    return false;
+  size_t size = strnlen(data, 257);
+  if (size > 256 || !valid_utf8(std::string_view(data, size)))
+    return false;
+  auto parsed = json::parse_json(reinterpret_cast<const uint8_t *>(data), size);
+  if (!parsed.is<JsonObject>())
+    return false;
+  std::string canonical;
+  canonical.reserve(size);
+  return canonical_value(parsed.as<JsonVariantConst>(), canonical, 0) &&
+         canonical == data;
+}
 
 class AddressResolver {
 public:
@@ -80,24 +214,40 @@ class EventSender {
 public:
   virtual ~EventSender() = default;
   virtual bool send(const std::string &packet) = 0;
+  uint32_t initialization_failures() const { return initialization_failures_; }
+
+protected:
+  void initialization_failed() {
+    ++initialization_failures_;
+    ESP_LOGW(TAG, "Timing sender initialization failed; retry in 5 s");
+  }
+  uint32_t initialization_failures_{0};
 };
 
 class UdpSender : public EventSender {
 public:
-  explicit UdpSender(ResolvedEndpoint &endpoint) : endpoint_(endpoint) {
-    fd_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (fd_ >= 0 && fcntl(fd_, F_SETFL, O_NONBLOCK) < 0) {
-      close(fd_);
-      fd_ = -1;
-    }
-  }
+  explicit UdpSender(ResolvedEndpoint &endpoint) : endpoint_(endpoint) {}
   ~UdpSender() override {
     if (fd_ >= 0)
       close(fd_);
   }
   bool send(const std::string &packet) override {
     const auto now = AssistLiveComponent::monotonic_ms();
-    if (fd_ < 0 || !endpoint_.ready(now))
+    if (fd_ < 0) {
+      if (now < initialize_at_)
+        return false;
+      initialize_at_ = now + 5000;
+      fd_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+      if (fd_ >= 0 && fcntl(fd_, F_SETFL, O_NONBLOCK) < 0) {
+        close(fd_);
+        fd_ = -1;
+      }
+      if (fd_ < 0) {
+        initialization_failed();
+        return false;
+      }
+    }
+    if (!endpoint_.ready(now))
       return false;
     if (sendto(fd_, packet.data(), packet.size(), MSG_DONTWAIT,
                reinterpret_cast<const sockaddr *>(&endpoint_.address),
@@ -110,18 +260,13 @@ public:
 protected:
   ResolvedEndpoint &endpoint_;
   int fd_{-1};
+  uint64_t initialize_at_{0};
 };
 
 #ifdef USE_ASSIST_LIVE_WEBSOCKET
 class WebSocketSender : public EventSender {
 public:
-  explicit WebSocketSender(ResolvedEndpoint &endpoint) : endpoint_(endpoint) {
-    tcp_ = esp_transport_tcp_init();
-    if (tcp_ != nullptr)
-      ws_ = esp_transport_ws_init(tcp_);
-    if (ws_ != nullptr)
-      esp_transport_ws_set_path(ws_, "/v1/device");
-  }
+  explicit WebSocketSender(ResolvedEndpoint &endpoint) : endpoint_(endpoint) {}
   ~WebSocketSender() override {
     if (ws_ != nullptr)
       esp_transport_destroy(ws_);
@@ -129,9 +274,24 @@ public:
       esp_transport_destroy(tcp_);
   }
   bool send(const std::string &packet) override {
-    if (ws_ == nullptr)
-      return false;
     const auto now = AssistLiveComponent::monotonic_ms();
+    if (ws_ == nullptr) {
+      if (now < initialize_at_)
+        return false;
+      initialize_at_ = now + 5000;
+      tcp_ = esp_transport_tcp_init();
+      if (tcp_ != nullptr)
+        ws_ = esp_transport_ws_init(tcp_);
+      if (ws_ == nullptr) {
+        if (tcp_ != nullptr) {
+          esp_transport_destroy(tcp_);
+          tcp_ = nullptr;
+        }
+        initialization_failed();
+        return false;
+      }
+      esp_transport_ws_set_path(ws_, "/v1/device");
+    }
     if (!connected_) {
       if (now < retry_at_)
         return false;
@@ -168,6 +328,7 @@ protected:
   ResolvedEndpoint &endpoint_;
   esp_transport_handle_t tcp_{nullptr}, ws_{nullptr};
   uint64_t retry_at_{0};
+  uint64_t initialize_at_{0};
   bool connected_{false};
 };
 #endif
@@ -211,7 +372,8 @@ void AssistLiveComponent::setup() {
 
 void AssistLiveComponent::emit_event(Stage stage, uint64_t device_ms,
                                      const char *canonical_data) {
-  if (queue_ == nullptr || exhausted_ || std::strlen(canonical_data) > 256) {
+  if (queue_ == nullptr || exhausted_ || canonical_data == nullptr ||
+      strnlen(canonical_data, 257) > 256) {
     ++dropped_;
     return;
   }
@@ -228,9 +390,8 @@ void AssistLiveComponent::emit_event(Stage stage, uint64_t device_ms,
 }
 
 void AssistLiveComponent::command_stream_start() {
-  if (command_open_)
+  if (command_open_.exchange(true))
     return;
-  command_open_ = true;
   emit_event(Stage::MIC_OPEN, monotonic_ms(),
              "{\"quality\":\"proxy\",\"source\":\"voice_assistant.on_start\"}");
 }
@@ -265,10 +426,15 @@ void AssistLiveComponent::run_() {
   while (true) {
     if (xQueueReceive(queue_, &event, portMAX_DELAY) != pdTRUE)
       continue;
+    if (!valid_event_data(event.data)) {
+      ++dropped_;
+      continue;
+    }
     auto packet =
         encode_event(device_, event, key_.data(), key_.size(), sign_hmac);
     if (packet.empty() || !sender->send(packet))
       ++dropped_;
+    initialization_failures_.store(sender->initialization_failures());
   }
 }
 
@@ -277,6 +443,8 @@ void AssistLiveComponent::dump_config() {
                 websocket_ ? "WebSocket" : "UDP");
   ESP_LOGCONFIG(TAG, "Dropped timing events: %u",
                 static_cast<unsigned>(dropped_.load()));
+  ESP_LOGCONFIG(TAG, "Sender initialization failures: %u",
+                static_cast<unsigned>(initialization_failures_.load()));
 }
 
 } // namespace assist_live

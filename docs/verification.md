@@ -1380,3 +1380,82 @@ PASS public data matches=0
 ```
 
 A source check also gave `denylist_matches=0`, `home_path_matches=0`, and `private_ipv4_matches=0` across 69 public files.
+
+## Firmware data and build controls
+
+Date: `2026-10-25` (UTC).
+
+The key-output check uses each window of six or more key bytes.
+It checks raw ASCII, lowercase hexadecimal text, and decimal text with and without separators.
+The same check runs on captured runtime logs and configuration output.
+Decimal log fields, decimal CSV output, and an eight-byte hexadecimal prefix each cause a test failure.
+
+A native test uses two `std::thread` objects to start and end 100 turns.
+It checks one `mic_open` event for each turn and no drop.
+The command state uses `std::atomic<bool>` with `exchange`.
+The production templates do not contain the probe-token substitution.
+
+The worker parses JSON with ArduinoJson `7.4.3` and compares canonical bytes before signing.
+Tests refuse malformed JSON, duplicate keys, incorrect key order, whitespace, invalid UTF-8, and values above the documented limits.
+The native tests download the same pinned header and check its SHA-256.
+See [runtime limits](protocol.md#automation-and-runtime-limits) for the numeric and nesting restrictions.
+
+UDP socket initialization and WebSocket transport initialization can retry after five seconds.
+Tests check the retry interval, failure counter, and warning output.
+The CMake preflight reads the IDF version from the fixture dependency lock.
+The actual build lock must use the same IDF version.
+The local and CI preflights select only `esp32s3`.
+
+Commands:
+
+```sh
+ESPHOME_WORK_DIR="$CHECK_TMP" PRIVATE_DENYLIST="$PRIVATE_DENYLIST" task check
+UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT="$CHECK_TMP/venv312" uv run --locked --python 3.12 pytest tests/ -q
+uv run --locked pytest tests/test_event_vectors.py -q
+actionlint
+```
+
+The complete gate gave exit code 0:
+
+```text
+13 files already formatted
+All checks passed!
+Success: no issues found in 13 source files
+171 passed in 62.72s (0:01:02)
+171 passed in 65.71s (0:01:05)
+PASS
+PASS
+PASS firmware bootstrap
+PASS source-only release
+PASS config warnings: new_warnings=0
+PASS config warnings: new_warnings=0
+PASS CMake toolchain: version=3.30.2
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+PASS CMake toolchain: version=3.30.2
+PASS probe staged; no upload or device connection
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+PASS own Git root
+PASS history secrets commits=10
+PASS public data matches=0
+```
+
+The two production builds and the unchanged probe each recorded managed CMake `3.30.2` in the actual build cache.
+Source and history secret checks gave `no leaks found`.
+The different Python 3.12 command gave `171 passed in 66.89s (0:01:06)`.
+The event suite gave `16 passed in 52.46s`. `actionlint` gave exit code 0.
+The vector `cmp` gave exit code 0. The two SHA-256 values stayed `b74cf28042f22e9bd85520a864f335e0f61fddbd99559ce458f78cd5b540bc89`.
+
+The 16 native and output mutations, 13 Python and pipeline mutations, and seven initial numbered mutations each caused a test failure.
+Native behavioral mutations compiled before the assertion failure.
+No compiler failure counts as a behavioral result.
+
+The public-data check is mandatory in `task check` and CI.
+With no external denylist, its output includes `NOT CHECKED private denylist` and `PASS public data matches=0`.
+Private-path and private-address checks run in that mode.
+The external denylist run gave `PASS public data matches=0`.
+
+Device trial not run: no test device at this time.

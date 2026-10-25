@@ -9,6 +9,8 @@ from esphome.components import esp32, media_player
 from esphome.const import CONF_ID
 from esphome.core import Lambda
 
+AUTO_LOAD = ["json"]
+
 assist_live_ns = cg.esphome_ns.namespace("assist_live")
 AssistLiveComponent = assist_live_ns.class_("AssistLiveComponent", cg.Component)
 EmitEventAction = assist_live_ns.class_("EmitEventAction", automation.Action)
@@ -63,9 +65,28 @@ def server_address(value):
     return value
 
 
+def _validate_data_value(value, depth=0):
+    if depth > 8:
+        raise cv.Invalid("event data exceeds eight nested levels")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise cv.Invalid("event object keys must be strings")
+            _validate_data_value(child, depth + 1)
+    elif isinstance(value, list):
+        for child in value:
+            _validate_data_value(child, depth + 1)
+    elif type(value) is int:
+        if not -(2**63) <= value < 2**64:
+            raise cv.Invalid("event integers must fit in 64 bits")
+    elif value is not None and not isinstance(value, (str, bool)):
+        raise cv.Invalid("event data does not support floating-point values")
+
+
 def event_data(value):
     if not isinstance(value, dict) or value.get("quality") == "measured":
         raise cv.Invalid("expected an event object, not a measured sample")
+    _validate_data_value(value)
     try:
         data = json.dumps(
             value,

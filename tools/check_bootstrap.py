@@ -97,6 +97,11 @@ def check_preserved(stock, current):
 def compare_example(fixture, example):
     expected = {**fixture}
     if "substitutions" in fixture:
+        require(
+            "assist_live_device_token" not in fixture["substitutions"]
+            and "assist_live_device_token" not in example["substitutions"],
+            "production example must not require a probe token",
+        )
         expected["substitutions"] = {
             **fixture["substitutions"],
             "test_device": "assist-live-example",

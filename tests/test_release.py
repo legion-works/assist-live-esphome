@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -396,6 +397,91 @@ def test_resolver_checks_manifest_and_uses_framework_environment(tmp_path, monke
     manifest.write_text(manifest.read_text().replace("3.30.2", "3.31.0"))
     with pytest.raises(ValueError, match="CMake pin mismatch"):
         resolve_cmake()
+
+
+@pytest.mark.parametrize("ci", [None, "true"])
+def test_cmake_resolver_uses_fixture_lock_and_one_target_set(tmp_path, monkeypatch, ci):
+    from esphome.espidf import framework
+
+    from tools.check_release import resolve_cmake
+
+    if ci:
+        monkeypatch.setenv("CI", ci)
+    else:
+        monkeypatch.delenv("CI", raising=False)
+    calls = []
+
+    def install(version, *, targets):
+        calls.append((version, targets))
+        return tmp_path, tmp_path / "penv"
+
+    monkeypatch.setattr(framework, "check_esp_idf_install", install)
+    monkeypatch.setattr(
+        framework, "get_framework_env", lambda *args: {"PATH": str(tmp_path)}
+    )
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/tools.json").write_text(
+        json.dumps(
+            {
+                "tools": [
+                    {
+                        "name": "cmake",
+                        "versions": [{"name": "3.30.2", "status": "recommended"}],
+                    }
+                ]
+            }
+        )
+    )
+    binary = tmp_path / "cmake"
+    binary.write_text("fake executable")
+    binary.chmod(0o700)
+    lock = tmp_path / "dependencies.lock"
+    lock.write_text("dependencies:\n  idf:\n    version: 5.5.7\n")
+    assert resolve_cmake(lock) == binary
+    assert calls == [("5.5.7", ["esp32s3"])]
+
+
+@pytest.mark.parametrize("mode", ["resolve", "execute", "version"])
+def test_cmake_failures_have_one_shape(tmp_path, monkeypatch, capsys, mode):
+    from tools import check_release
+
+    binary = tmp_path / "cmake"
+    binary.write_text(
+        "#!/bin/sh\n"
+        + ("exit 2\n" if mode == "execute" else "printf 'cmake version 4.4.4\\n'\n")
+    )
+    binary.chmod(0o700)
+
+    def resolve():
+        if mode == "resolve":
+            raise ValueError("fixture failure")
+        return binary
+
+    monkeypatch.setattr(check_release, "resolve_cmake", resolve)
+    assert not check_release.check_cmake_toolchain()
+    errors = [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("FAIL")
+    ]
+    assert len(errors) == 1
+    assert re.fullmatch(
+        r"FAIL CMake toolchain: path=\S+ version=\S+ error=.+", errors[0]
+    )
+
+
+def test_compile_checks_the_fixture_idf_lock_against_the_actual_build(
+    tmp_path, monkeypatch
+):
+    from tools import check_release
+
+    log = tmp_path / "compile.log"
+    log.write_text("INFO Successfully compiled program.\n")
+    monkeypatch.setattr(
+        check_release, "read_fixture_idf_version", lambda: "5.5.7", raising=False
+    )
+    assert any(
+        "fixture IDF version mismatch" in error
+        for error in check_release.check_log(log, compile_log=True)
+    )
 
 
 @pytest.mark.parametrize(

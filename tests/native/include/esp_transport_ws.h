@@ -10,7 +10,12 @@ enum ws_transport_opcodes_t {
 inline int ws_handle = 2;
 inline bool test_write_success = true;
 inline std::string test_ws_packet;
+inline int fail_ws_attempts = 0;
 inline esp_transport_handle_t esp_transport_ws_init(esp_transport_handle_t) {
+  if (fail_ws_attempts > 0) {
+    --fail_ws_attempts;
+    return nullptr;
+  }
   return &ws_handle;
 }
 inline void esp_transport_ws_set_path(esp_transport_handle_t,

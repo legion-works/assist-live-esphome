@@ -1,7 +1,6 @@
 # Compile only. Do not flash this fixture.
 substitutions:
   test_device: assist-live-compile-test
-  assist_live_device_token: !secret assist_live_device_token
   assist_live_server: !secret assist_live_server
   voice_pe_sounds: https://raw.githubusercontent.com/esphome/home-assistant-voice-pe/2644f4c794271d735d182ca7ebf899ed46164f4e/sounds
   jack_connected_sound_file: ${voice_pe_sounds}/jack_connected.flac

@@ -3,13 +3,55 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import urllib.request
+from functools import cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "components/assist_live"
+RUNTIME_KEY = b"fake-secret-byte-array-1234567890"[:32]
+
+
+@cache
+def native_json_include() -> tempfile.TemporaryDirectory:
+    directory = tempfile.TemporaryDirectory(prefix="assist-live-json-")
+    with urllib.request.urlopen(
+        "https://github.com/bblanchon/ArduinoJson/releases/download/v7.4.3/ArduinoJson-v7.4.3.h",
+        timeout=60,
+    ) as response:
+        header = response.read(2_000_001)
+    assert len(header) <= 2_000_000
+    assert (
+        hashlib.sha256(header).hexdigest()
+        == "ab5fbb8268b846b5f4bc5a5fee11bb2c96f7b8b846f5bef6540afb6a9cc76a5b"
+    )
+    (Path(directory.name) / "ArduinoJson.h").write_bytes(header)
+    return directory
+
+
+def assert_secret_absent(output: str, key: bytes) -> None:
+    assert len(key) >= 6, "secret canary must contain at least six bytes"
+    decimal_tokens = ",".join(
+        re.findall(r"(?<![A-Za-z0-9])\d{1,3}(?![A-Za-z0-9])", output)
+    )
+    for start in range(len(key) - 5):
+        for end in range(start + 6, len(key) + 1):
+            window = key[start:end]
+            patterns = {window.hex()}
+            if all(byte < 128 for byte in window):
+                patterns.add(window.decode("ascii"))
+            for separator in ("", " ", ",", ", ", ":", ";", "-", "\n", "\t"):
+                patterns.add(separator.join(str(byte) for byte in window))
+            assert not any(pattern in output for pattern in patterns), (
+                "secret material in captured output"
+            )
+            assert ",".join(str(byte) for byte in window) not in decimal_tokens, (
+                "secret material in decimal log fields"
+            )
 
 
 def compiler() -> str:
@@ -90,17 +132,21 @@ def run_cpp_vectors(path: str | Path) -> str:
 
 
 def run_cpp_runtime() -> str:
+    compiler()
     with tempfile.TemporaryDirectory(prefix="assist-live-runtime-") as directory:
         for websocket in (False, True):
             executable = str(Path(directory) / ("websocket" if websocket else "udp"))
             command = [
                 compiler(),
-                "-std=c++17",
+                "-std=c++20",
+                "-pthread",
                 "-Wall",
                 "-Wextra",
                 "-Werror",
                 "-I",
                 str(ROOT / "tests/native/include"),
+                "-I",
+                native_json_include().name,
                 "-I",
                 str(COMPONENT),
                 str(ROOT / "tests/native/event_runtime.cpp"),
@@ -113,8 +159,9 @@ def run_cpp_runtime() -> str:
             run(command)
             output = run([executable])
             assert "PASS runtime" in output
-            assert "fake-secret-byte-array" not in output
-            assert "66616b652d736563726574" not in output
+            assert "Timing sender initialization failed; retry in 5 s" in output
+            assert "Sender initialization failures: 1" in output
+            assert_secret_absent(output, RUNTIME_KEY)
         access = Path(directory) / "private_key.cpp"
         access.write_text(
             '#include "assist_live.h"\n'

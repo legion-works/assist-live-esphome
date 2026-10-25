@@ -7,3 +7,4 @@
     std::printf(__VA_ARGS__);                                                  \
     std::puts("");                                                             \
   } while (false)
+#define ESP_LOGW ESP_LOGCONFIG

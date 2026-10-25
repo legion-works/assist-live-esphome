@@ -27,15 +27,18 @@ public:
   void set_websocket(bool websocket) { websocket_ = websocket; }
   void set_media_player(media_player::MediaPlayer *player) { player_ = player; }
   static uint64_t monotonic_ms();
-  // canonical_data comes from validated automation data or a fixed callback.
+  // The worker checks canonical data to keep JSON parsing off the audio path.
   void emit_event(Stage stage, uint64_t device_ms,
                   const char *canonical_data = "{}");
   void command_stream_start();
-  void command_stream_end() { command_open_ = false; }
+  void command_stream_end() { command_open_.exchange(false); }
   void playback_state(bool active);
   // Only an externally validated sample callback can call this hook.
   void measured_sample_boundary(bool started, uint64_t device_ms);
   uint32_t dropped_events() const { return dropped_.load(); }
+  uint32_t sender_initialization_failures() const {
+    return initialization_failures_.load();
+  }
 
 protected:
   void run_();
@@ -43,10 +46,11 @@ protected:
   std::array<uint8_t, 32> key_{};
   QueueHandle_t queue_{nullptr};
   uint64_t boot_{0}, next_seq_{0};
-  bool exhausted_{false}, command_open_{false}, playback_active_{false},
-      websocket_{false};
+  std::atomic<bool> command_open_{false};
+  bool exhausted_{false}, playback_active_{false}, websocket_{false};
   uint16_t port_{8765};
   std::atomic<uint32_t> dropped_{0};
+  std::atomic<uint32_t> initialization_failures_{0};
   media_player::MediaPlayer *player_{nullptr};
 };
 

@@ -1,0 +1,4 @@
+# IDF entry from the compile fixture's generated dependencies.lock.
+dependencies:
+  idf:
+    version: 5.5.6

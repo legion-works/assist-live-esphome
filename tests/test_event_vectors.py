@@ -39,13 +39,19 @@ def test_automation_data_is_canonical_and_cannot_claim_measured():
     assert event_data({"z": 1, "a": "é"}) == '{"a":"é","z":1}'
     assert server_address("timing-server.invalid") == "timing-server.invalid"
     assert server_address("192.0.2.1") == "192.0.2.1"
-    for value in ({"quality": "measured"}, {"n": float("nan")}, {"n": "x" * 257}):
+    for value in (
+        {"quality": "measured"},
+        {"n": float("nan")},
+        {"n": 1.5},
+        {"n": 2**64},
+        {"n": "x" * 257},
+    ):
         with pytest.raises(cv.Invalid):
             event_data(value)
 
 
 def test_generated_wake_timestamp_is_read_at_each_event(tmp_path):
-    from tests.event_vectors import COMPONENT, compiler, run
+    from tests.event_vectors import COMPONENT, compiler, native_json_include, run
 
     result = subprocess.run(
         [
@@ -89,6 +95,8 @@ def test_generated_wake_timestamp_is_read_at_each_event(tmp_path):
             "-I",
             str(ROOT / "tests/native/include"),
             "-I",
+            native_json_include().name,
+            "-I",
             str(COMPONENT),
             str(harness),
             str(COMPONENT / "event_codec.cpp"),
@@ -106,6 +114,7 @@ def test_config_masks_device_key_without_new_warnings(
 ):
     import yaml
 
+    from tests.event_vectors import assert_secret_absent
     from tools.check_release import check_log
 
     command = [
@@ -130,7 +139,9 @@ def test_config_masks_device_key_without_new_warnings(
     )
     assert result.returncode == 0, result.stdout + result.stderr
     secret = yaml.safe_load((ROOT / "tests/fixtures/secrets.yaml").read_text())
-    assert secret["assist_live_hmac_key"] not in result.stdout + result.stderr
+    assert_secret_absent(
+        result.stdout + result.stderr, bytes.fromhex(secret["assist_live_hmac_key"])
+    )
     assert "[redacted]" in result.stdout
     log = tmp_path / "config.log"
     log.write_text(result.stdout + result.stderr)
@@ -152,3 +163,24 @@ def test_key_representer_changes_only_the_opaque_type():
         assert "[redacted]" in masked and fake not in masked
     assert yaml_util.dump(public) == before
     assert fake in yaml_util.dump({"ordinary_string": fake})
+
+
+@pytest.mark.parametrize(
+    "encoding", ["raw", "hex", "decimal", "csv", "lines", "prefix"]
+)
+def test_secret_gate_refuses_every_key_window(encoding):
+    from tests.event_vectors import assert_secret_absent
+
+    key = b"fake-secret-byte-array-1234567890"[:32]
+    part = key[3:9]
+    rendered = {
+        "raw": part.decode("ascii"),
+        "hex": part.hex(),
+        "decimal": "".join(str(byte) for byte in part),
+        "csv": ",".join(str(byte) for byte in part),
+        "lines": "\n".join(f"assist_live: key byte: {byte}" for byte in part),
+        "prefix": key[:8].hex(),
+    }[encoding]
+    with pytest.raises(AssertionError, match="secret material"):
+        assert_secret_absent(rendered, key)
+    assert_secret_absent("Assist Live timing: UDP\nDropped timing events: 17", key)

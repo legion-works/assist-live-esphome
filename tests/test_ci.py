@@ -223,3 +223,14 @@ def test_ci_runs_native_vectors_and_both_transport_compiles():
         step.get("run", "") for step in workflow["compile"]["steps"]
     )
     assert "task config compile" in compile_steps
+
+
+def test_public_tree_scan_is_required_locally_and_in_ci():
+    tasks = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]
+    assert {"task": "privacy"} in tasks["check"]["cmds"]
+    privacy = "\n".join(tasks["privacy"]["cmds"])
+    assert "check_public_tree.py --history --root ." in privacy
+    assert '--private-denylist "$PRIVATE_DENYLIST"' in privacy
+    checks = load_workflow("ci.yml")["jobs"]["checks"]
+    runs = "\n".join(step.get("run", "") for step in checks["steps"])
+    assert "source-only secrets privacy" in runs
