@@ -12,6 +12,7 @@ struct TestQueue {
 };
 using QueueHandle_t = TestQueue *;
 inline bool fail_queue = false;
+inline void (*test_empty_queue_hook)() = nullptr;
 inline QueueHandle_t xQueueCreate(size_t capacity, size_t size) {
   return fail_queue ? nullptr : new TestQueue{capacity, size, {}};
 }
@@ -24,7 +25,12 @@ inline int xQueueSend(QueueHandle_t queue, const void *event, int ticks) {
   queue->items.emplace_back(bytes, bytes + queue->size);
   return 1;
 }
-inline int xQueueReceive(QueueHandle_t queue, void *event, int) {
+inline int xQueueReceive(QueueHandle_t queue, void *event, int ticks) {
+  assert(ticks == 0 || ticks == 20);
+  if (queue->items.empty() && test_empty_queue_hook != nullptr) {
+    test_empty_queue_hook();
+    return 0;
+  }
   if (queue->items.empty())
     throw std::runtime_error("worker drained");
   std::memcpy(event, queue->items.front().data(), queue->size);

@@ -28,14 +28,6 @@ License: <https://github.com/esphome/home-assistant-voice-pe/blob/2644f4c794271d
 `uv.lock` records the external Python dependency versions.
 This repository does not vendor those packages.
 
-## Public-data checker
-
-`tools/check_public_tree.py` comes from the assist-live integration repository.
-Its Apache-2.0 license is in `LICENSES/Apache-2.0.txt`.
-This copy uses the parenthesized `except` syntax for Python 3.12.
-
-Source: <https://github.com/legion-works/assist-live/blob/main/tools/check_public_tree.py>
-
 ## Native JSON tests
 
 The native tests download the ArduinoJson `7.4.3` header and check its SHA-256.

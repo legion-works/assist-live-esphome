@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "event_codec.h"
 
+#include "mbedtls/platform_util.h"
 #include <cstring>
 
 namespace esphome {
@@ -53,11 +54,14 @@ std::string canonical_event(const std::string &device, const Event &event) {
 std::string encode_event(const std::string &device, const Event &event,
                          const uint8_t *key, size_t key_size, Hmac hmac) {
   const auto canonical = canonical_event(device, event);
-  uint8_t digest[32];
-  if (canonical.empty() || key_size == 0 ||
-      !hmac(key, key_size, reinterpret_cast<const uint8_t *>(canonical.data()),
-            canonical.size(), digest))
+  if (canonical.empty() || key_size == 0)
     return {};
+  uint8_t digest[32]{};
+  if (!hmac(key, key_size, reinterpret_cast<const uint8_t *>(canonical.data()),
+            canonical.size(), digest)) {
+    mbedtls_platform_zeroize(digest, sizeof(digest));
+    return {};
+  }
   static const char HEX[] = "0123456789abcdef";
   std::string tag;
   tag.reserve(64);
@@ -65,6 +69,7 @@ std::string encode_event(const std::string &device, const Event &event,
     tag += HEX[byte >> 4];
     tag += HEX[byte & 15];
   }
+  mbedtls_platform_zeroize(digest, sizeof(digest));
   return "{\"version\":1,\"device\":\"" + device +
          "\",\"boot\":" + std::to_string(event.boot) +
          ",\"seq\":" + std::to_string(event.seq) +

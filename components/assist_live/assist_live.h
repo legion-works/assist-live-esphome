@@ -7,6 +7,7 @@
 #include "event_codec.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "mbedtls/platform_util.h"
 #include <array>
 #include <atomic>
 
@@ -17,11 +18,16 @@ class AssistLiveComponent : public Component {
 public:
   void setup() override;
   void dump_config() override;
+  void on_shutdown() override;
+  bool teardown() override { return worker_stopped_.load(); }
   float get_setup_priority() const override {
     return setup_priority::AFTER_WIFI;
   }
   void set_device(const std::string &device) { device_ = device; }
-  void set_hmac_key(const std::array<uint8_t, 32> &key) { key_ = key; }
+  void set_hmac_key(std::array<uint8_t, 32> key) {
+    key_ = key;
+    mbedtls_platform_zeroize(key.data(), key.size());
+  }
   void set_server(const std::string &server) { server_ = server; }
   void set_port(uint16_t port) { port_ = port; }
   void set_websocket(bool websocket) { websocket_ = websocket; }
@@ -36,6 +42,7 @@ public:
   // Only an externally validated sample callback can call this hook.
   void measured_sample_boundary(bool started, uint64_t device_ms);
   uint32_t dropped_events() const { return dropped_.load(); }
+  uint32_t refused_events() const { return refused_.load(); }
   uint32_t sender_initialization_failures() const {
     return initialization_failures_.load();
   }
@@ -47,10 +54,12 @@ protected:
   QueueHandle_t queue_{nullptr};
   uint64_t boot_{0}, next_seq_{0};
   std::atomic<bool> command_open_{false};
+  std::atomic<bool> stop_requested_{false}, worker_stopped_{true};
   bool exhausted_{false}, playback_active_{false}, websocket_{false};
   uint16_t port_{8765};
   std::atomic<uint32_t> dropped_{0};
   std::atomic<uint32_t> initialization_failures_{0};
+  std::atomic<uint32_t> refused_{0};
   media_player::MediaPlayer *player_{nullptr};
 };
 

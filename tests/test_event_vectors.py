@@ -2,11 +2,43 @@ import os
 import re
 import subprocess
 import sys
+from importlib import resources
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize(
+    "filename,signature",
+    [
+        ("component.h", r"virtual\s+void\s+setup\s*\(\s*\)"),
+        ("component.h", r"virtual\s+void\s+dump_config\s*\(\s*\)"),
+        ("component.h", r"virtual\s+float\s+get_setup_priority\s*\(\s*\)\s+const"),
+        ("component.h", r"virtual\s+void\s+on_shutdown\s*\(\s*\)"),
+        ("component.h", r"virtual\s+bool\s+teardown\s*\(\s*\)"),
+        ("component.h", r"void\s+mark_failed\s*\(\s*\)"),
+        (
+            "automation.h",
+            r"virtual\s+void\s+play\s*\(\s*const\s+Ts\s*&\s*\.\.\.\s*x\s*\)\s*=\s*0",
+        ),
+    ],
+)
+def test_native_declarations_match_pinned_esphome(filename, signature):
+    assert version("esphome") == "2026.10.0"
+    real = resources.files("esphome").joinpath("core", filename).read_text()
+    shim = (ROOT / "tests/native/include/esphome/core" / filename).read_text()
+    assert re.search(signature, real), "pinned ESPHome declaration changed"
+    assert re.search(signature, shim), "native shim declaration differs from ESPHome"
+
+
+def test_native_component_does_not_invent_a_virtual_destructor():
+    real = resources.files("esphome").joinpath("core/component.h").read_text()
+    shim = (ROOT / "tests/native/include/esphome/core/component.h").read_text()
+    pattern = r"virtual\s+~Component\s*\("
+    assert bool(re.search(pattern, shim)) == bool(re.search(pattern, real))
 
 
 def test_cpp_and_server_vectors_match():

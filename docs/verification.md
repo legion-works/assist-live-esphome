@@ -1459,3 +1459,165 @@ Private-path and private-address checks run in that mode.
 The external denylist run gave `PASS public data matches=0`.
 
 Device trial not run: no test device at this time.
+
+## Sender control frames and shutdown
+
+Run date: 2026-10-25 (UTC).
+
+The WebSocket sender reads control frames with a `0 ms` timeout and a 125-byte buffer.
+It keeps one pending event until it receives a pong with the same eight-byte payload.
+A close, send failure, or one-second confirmation timeout counts that event as dropped.
+The sender does not send the event again.
+
+The server processes each event result before its next receive call.
+A refused event closes the connection before the confirmation pong.
+The confirmation is not proof of durable storage.
+A missing pong can count an event that the server accepted as dropped.
+
+Close codes `1008` and `1009` increment the refusal counter and write a warning.
+Subsequent events use a 60-second retry interval.
+HTTP `503` uses 5, 10, 20, 40, and then 60 seconds.
+Transport failures use five seconds. Each closed transport uses new objects for its next connection.
+
+The codec clears its HMAC digest after use. The key setter clears its temporary copy.
+`on_shutdown()` requests worker shutdown. `teardown()` stays `false` until the worker completes cleanup.
+The worker closes its socket or transports and clears the stored key before `vTaskDelete`.
+The native tests examine cleanup at that call, before stack cleanup can hide a missing operation.
+
+`Application::safe_reboot()` waits for teardown. `Application::reboot()` does not wait for the worker.
+A resolver wait or the shutdown deadline can stop cleanup before it is complete.
+The component does not use a destructor for shutdown.
+
+### Initial test results
+
+Commands:
+
+```sh
+uv run --locked pytest tests/test_event_vectors.py::test_cpp_and_server_vectors_match tests/test_event_vectors.py::test_runtime_keeps_audio_nonblocking_and_credentials_private tests/test_release.py::test_build_lock_error_names_compiled_source -q
+uv run --locked pytest tests/test_ci.py::test_worktree_checks_accept_unstaged_deletions -q
+```
+
+The initial cleanup and diagnostic tests gave `5 failed in 2.17s`.
+The native assertions included:
+
+```text
+Assertion `test_zeroized_sizes.size() == 1 && test_zeroized_sizes.back() == 32' failed.
+Assertion `test_zeroized_sizes.size() == wipes + 1 && test_zeroized_sizes.back() == 32' failed.
+```
+
+The necessary build-lock error was `cannot read compiled IDF version source: dependencies.lock`.
+They received `cannot read fixture IDF baseline version source`.
+The sender close test then gave `1 failed, 4 passed in 2.80s`:
+
+```text
+Assertion `!closed.send(packet) && test_text_writes == writes' failed.
+```
+
+The ESP32 compile refused an invalid destructor override:
+
+```text
+error: 'esphome::assist_live::AssistLiveComponent::~AssistLiveComponent()' marked 'override', but does not override
+```
+
+The native `Component` declaration agrees with the pinned ESPHome header.
+Eight checks compare the necessary `Component` and `Action` declarations with ESPHome `2026.10.0`.
+They also compare destructor virtuality. Shutdown uses the lifecycle hooks.
+
+The unstaged-deletion tests gave `2 failed in 0.10s`.
+The bootstrap check reported `FileNotFoundError` for a removed file.
+The release check printed `FAIL source-only release: deleted-source.py: unreadable source file`.
+Implicit checks subtract `git ls-files --deleted -z`. An explicitly named unreadable path gives a failure.
+
+### Complete checks
+
+All recorded load values were below 32 before the full checks.
+Commands from the firmware repository:
+
+```sh
+task check
+UV_PROJECT_ENVIRONMENT=.venv-floor uv run --locked --python 3.12 pytest tests/ -q
+actionlint
+cmp tests/fixtures/device-vectors.json "$WORKSPACE/assist-live-server/protocol/device-vectors.json"
+sha256sum tests/fixtures/device-vectors.json "$WORKSPACE/assist-live-server/protocol/device-vectors.json"
+```
+
+The full check used an external build directory through `ESPHOME_WORK_DIR`.
+It exited with code 0. Result lines:
+
+```text
+11 files already formatted
+All checks passed!
+Success: no issues found in 11 source files
+190 passed in 63.80s (0:01:03)
+190 passed in 63.09s (0:01:03)
+PASS
+PASS
+PASS firmware bootstrap
+PASS source-only release
+PASS config warnings: new_warnings=0
+PASS config warnings: new_warnings=0
+PASS CMake toolchain: version=3.30.2
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+PASS CMake toolchain: version=3.30.2
+PASS probe staged; no upload or device connection
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+NOT CHECKED public tree
+```
+
+The two timing variants and the unchanged probe compiled.
+The different Python 3.12 run gave `190 passed in 64.56s (0:01:04)`.
+`actionlint` and `cmp` each exited with code 0.
+The two vector SHA-256 values stayed `b74cf28042f22e9bd85520a864f335e0f61fddbd99559ce458f78cd5b540bc89`.
+Source, generated-source, and history Gitleaks checks reported `no leaks found`.
+
+Forty numbered mutations each caused the necessary test failure.
+The 24 native mutations compiled before their behavioral assertions stopped the tests.
+Two header-contract mutations and 14 pipeline or Python mutations each caused a test failure.
+The mutations include the checker URL, history flag, download failure, optional denylist, and local fallback.
+
+### One public-data checker
+
+The authoritative checker stays in the assist-live integration repository.
+This repository has no copy, copied test suite, or checker license file.
+The checker imports only Python standard-library modules. Its external commands are Git and Gitleaks.
+CI supplies these tools. The actionlint installation stays at the shared, SHA-256-checked `1.7.12` release archive.
+
+CI downloads only the checker file from integration `main` into `RUNNER_TEMP`.
+A download failure stops CI. No second Git repository is necessary.
+The CI command uses Python 3.14, history scanning, and the optional external denylist.
+The download and authoritative check gave:
+
+```text
+PASS own Git root
+PASS history secrets commits=11
+PASS public data matches=0
+```
+
+The history count gives the number of commits for the refs at command time. It can change with the available refs.
+The local privacy task uses the sibling checker when that file is available.
+Without that sibling file, it reports `NOT CHECKED public tree`, as the complete check above did.
+The different authoritative check command is:
+
+```sh
+uv run --no-project --python 3.14 python "$WORKSPACE/assist-live/tools/check_public_tree.py" --history --root . --private-denylist "$PRIVATE_DENYLIST"
+```
+
+Device trial not run: no test device at this time.
+
+The ASD-STE100 check used an external checker:
+
+```sh
+python "$STE_CHECKER" docs/protocol.md docs/verification.md STRUCTURE.md THIRD_PARTY_NOTICES.md
+```
+
+Each file gave 0 findings and exit code 0.
+The last authoritative privacy check gave the three `PASS` lines above.
+The different literal self-check reported:
+
+```text
+publishable_files=72 denylist_matches=0 home_path_matches=0 private_ipv4_matches=0
+```

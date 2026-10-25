@@ -182,13 +182,18 @@ def read_build_cmake(build_root: Path) -> tuple[str, str]:
 def check_component_versions(build_root: Path) -> list[str]:
     failures = []
     try:
+        expected_idf = read_fixture_idf_version()
+    except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError):
+        expected_idf = None
+        failures.append("cannot read fixture IDF baseline version source")
+    try:
         actual_idf = yaml.safe_load((build_root / "dependencies.lock").read_text())[
             "dependencies"
         ]["idf"]["version"]
-        if actual_idf != read_fixture_idf_version():
+        if expected_idf is not None and actual_idf != expected_idf:
             failures.append("fixture IDF version mismatch: compiled dependency lock")
     except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError):
-        failures.append("cannot read fixture IDF baseline version source")
+        failures.append("cannot read compiled IDF version source: dependencies.lock")
     for version, source in sorted(
         set(COMPILER_BASELINE.values()) | set(CMAKE_BASELINE.values())
     ):
@@ -430,7 +435,14 @@ def main() -> int:
                 .decode()
                 .split("\0")
             )
-            paths = [ROOT / name for name in sorted(set(names)) if name]
+            deleted = set(
+                subprocess.check_output(
+                    ["git", "ls-files", "--deleted", "-z"], cwd=ROOT
+                )
+                .decode()
+                .split("\0")
+            )
+            paths = [ROOT / name for name in sorted(set(names) - deleted) if name]
             errors = check_release([*paths, *args.paths])
         except (OSError, subprocess.CalledProcessError):
             errors = ["cannot list publishable files"]

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "event_codec.h"
+#include "mbedtls/platform_util.h"
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -23,6 +24,12 @@ static bool hmac_oracle(const uint8_t *key, size_t key_size,
          expected_body);
   std::memcpy(digest, expected_digest.data(), 32);
   return true;
+}
+
+static bool failed_hmac(const uint8_t *, size_t, const uint8_t *, size_t,
+                        uint8_t *digest) {
+  std::memset(digest, 0xa5, 32);
+  return false;
 }
 
 int main(int argc, char **argv) {
@@ -50,5 +57,11 @@ int main(int argc, char **argv) {
       argv[4], event, reinterpret_cast<const uint8_t *>(expected_key.data()),
       expected_key.size(), hmac_oracle);
   assert(wire == unhex(argv[10]));
+  assert(test_zeroized_sizes.size() == 1 && test_zeroized_sizes.back() == 32);
+  assert(encode_event(argv[4], event,
+                      reinterpret_cast<const uint8_t *>(expected_key.data()),
+                      expected_key.size(), failed_hmac)
+             .empty());
+  assert(test_zeroized_sizes.size() == 2 && test_zeroized_sizes.back() == 32);
   std::cout << wire << '\n';
 }

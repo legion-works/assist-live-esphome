@@ -212,21 +212,31 @@ protected:
 
 class EventSender {
 public:
+  explicit EventSender(std::atomic<uint32_t> *failures = nullptr)
+      : failures_(failures) {}
   virtual ~EventSender() = default;
   virtual bool send(const std::string &packet) = 0;
+  virtual bool poll() { return true; }
+  virtual bool pending() const { return false; }
+  virtual uint32_t refused_events() const { return 0; }
   uint32_t initialization_failures() const { return initialization_failures_; }
 
 protected:
   void initialization_failed() {
     ++initialization_failures_;
+    if (failures_ != nullptr)
+      ++*failures_;
     ESP_LOGW(TAG, "Timing sender initialization failed; retry in 5 s");
   }
   uint32_t initialization_failures_{0};
+  std::atomic<uint32_t> *failures_;
 };
 
 class UdpSender : public EventSender {
 public:
-  explicit UdpSender(ResolvedEndpoint &endpoint) : endpoint_(endpoint) {}
+  explicit UdpSender(ResolvedEndpoint &endpoint,
+                     std::atomic<uint32_t> *failures = nullptr)
+      : EventSender(failures), endpoint_(endpoint) {}
   ~UdpSender() override {
     if (fd_ >= 0)
       close(fd_);
@@ -266,15 +276,16 @@ protected:
 #ifdef USE_ASSIST_LIVE_WEBSOCKET
 class WebSocketSender : public EventSender {
 public:
-  explicit WebSocketSender(ResolvedEndpoint &endpoint) : endpoint_(endpoint) {}
-  ~WebSocketSender() override {
-    if (ws_ != nullptr)
-      esp_transport_destroy(ws_);
-    if (tcp_ != nullptr)
-      esp_transport_destroy(tcp_);
-  }
+  explicit WebSocketSender(ResolvedEndpoint &endpoint,
+                           std::atomic<uint32_t> *failures = nullptr)
+      : EventSender(failures), endpoint_(endpoint) {}
+  ~WebSocketSender() override { destroy_(); }
+  bool pending() const override { return pending_; }
+  uint32_t refused_events() const override { return refused_; }
   bool send(const std::string &packet) override {
     const auto now = AssistLiveComponent::monotonic_ms();
+    if (pending_ || !poll() || (!connected_ && now < retry_at_))
+      return false;
     if (ws_ == nullptr) {
       if (now < initialize_at_)
         return false;
@@ -290,7 +301,11 @@ public:
         initialization_failed();
         return false;
       }
-      esp_transport_ws_set_path(ws_, "/v1/device");
+      esp_transport_ws_config_t config{};
+      config.ws_path = "/v1/device";
+      config.propagate_control_frames = true;
+      if (esp_transport_ws_set_config(ws_, &config) != 0)
+        return failed_(now);
     }
     if (!connected_) {
       if (now < retry_at_)
@@ -306,9 +321,13 @@ public:
           esp_transport_connect(ws_, address, ntohs(endpoint_.address.sin_port),
                                 250) >= 0;
       if (!connected_) {
-        esp_transport_close(ws_);
-        endpoint_.failed(now);
-        return false;
+        const int status = esp_transport_ws_get_upgrade_request_status(ws_);
+        if (status == 503) {
+          const uint32_t delay = overload_delay_;
+          overload_delay_ = std::min<uint32_t>(overload_delay_ * 2, 60000);
+          return failed_(now, delay);
+        }
+        return failed_(now);
       }
     }
     int sent = esp_transport_ws_send_raw(
@@ -316,20 +335,109 @@ public:
         static_cast<ws_transport_opcodes_t>(WS_TRANSPORT_OPCODES_TEXT |
                                             WS_TRANSPORT_OPCODES_FIN),
         packet.data(), packet.size(), 50);
-    if (sent == static_cast<int>(packet.size()))
+    if (sent != static_cast<int>(packet.size()))
+      return failed_(now);
+    // A matching pong follows the event in the server's receive loop.
+    // A local TCP write alone cannot detect a half-open connection.
+    ++probe_id_;
+    for (size_t i = 0; i < sizeof(probe_); ++i)
+      probe_[i] = static_cast<char>(probe_id_ >> ((7 - i) * 8));
+    pending_ = true;
+    confirm_at_ = now + 1000;
+    if (esp_transport_ws_send_raw(
+            ws_,
+            static_cast<ws_transport_opcodes_t>(WS_TRANSPORT_OPCODES_PING |
+                                                WS_TRANSPORT_OPCODES_FIN),
+            probe_, sizeof(probe_), 50) != sizeof(probe_))
+      return failed_(now);
+    return poll();
+  }
+
+  bool poll() override {
+    if (!connected_)
       return true;
-    connected_ = false;
-    endpoint_.failed(now);
-    esp_transport_close(ws_);
-    return false;
+    const auto now = AssistLiveComponent::monotonic_ms();
+    char control[125];
+    for (unsigned frames = 0; frames < 4; ++frames) {
+      int ready = esp_transport_poll_read(ws_, 0);
+      if (ready < 0)
+        return failed_(now);
+      if (ready == 0) {
+        if (pending_ && now >= confirm_at_)
+          return failed_(now);
+        return !pending_;
+      }
+      const int size = esp_transport_read(ws_, control, sizeof(control), 0);
+      if (size < 0 || size != esp_transport_ws_get_read_payload_len(ws_) ||
+          !esp_transport_ws_get_fin_flag(ws_))
+        return failed_(now);
+      const auto opcode = esp_transport_ws_get_read_opcode(ws_);
+      if (opcode == WS_TRANSPORT_OPCODES_CLOSE) {
+        int code = size >= 2 ? (static_cast<uint8_t>(control[0]) << 8) |
+                                   static_cast<uint8_t>(control[1])
+                             : 0;
+        esp_transport_ws_send_raw(
+            ws_,
+            static_cast<ws_transport_opcodes_t>(WS_TRANSPORT_OPCODES_CLOSE |
+                                                WS_TRANSPORT_OPCODES_FIN),
+            control, size, 0);
+        if (code == 1008 || code == 1009) {
+          ++refused_;
+          ESP_LOGW(TAG, "Timing event refused: close code %d; retry in 60 s",
+                   code);
+          return failed_(now, 60000);
+        }
+        return failed_(now);
+      }
+      if (opcode == WS_TRANSPORT_OPCODES_PING) {
+        if (esp_transport_ws_send_raw(
+                ws_,
+                static_cast<ws_transport_opcodes_t>(WS_TRANSPORT_OPCODES_PONG |
+                                                    WS_TRANSPORT_OPCODES_FIN),
+                control, size, 0) != size)
+          return failed_(now);
+      } else if (opcode == WS_TRANSPORT_OPCODES_PONG) {
+        if (pending_ && size == sizeof(probe_) &&
+            std::memcmp(control, probe_, sizeof(probe_)) == 0) {
+          pending_ = false;
+          overload_delay_ = 5000;
+        }
+      } else {
+        return failed_(now);
+      }
+    }
+    // A control-frame flood must not keep the worker in an unbounded read loop.
+    return failed_(now);
   }
 
 protected:
+  void destroy_() {
+    if (ws_ != nullptr) {
+      esp_transport_close(ws_);
+      esp_transport_destroy(ws_);
+      ws_ = nullptr;
+    }
+    if (tcp_ != nullptr) {
+      esp_transport_destroy(tcp_);
+      tcp_ = nullptr;
+    }
+    connected_ = false;
+  }
+  bool failed_(uint64_t now, uint32_t delay = 5000) {
+    pending_ = false;
+    retry_at_ = now + delay;
+    endpoint_.failed(now);
+    destroy_();
+    return false;
+  }
   ResolvedEndpoint &endpoint_;
   esp_transport_handle_t tcp_{nullptr}, ws_{nullptr};
   uint64_t retry_at_{0};
   uint64_t initialize_at_{0};
-  bool connected_{false};
+  uint64_t confirm_at_{0}, probe_id_{0};
+  uint32_t overload_delay_{5000}, refused_{0};
+  char probe_[8]{};
+  bool connected_{false}, pending_{false};
 };
 #endif
 
@@ -353,12 +461,14 @@ void AssistLiveComponent::setup() {
     return;
   }
   // Socket waits stay on core 0 at priority 0, not on the native audio path.
+  worker_stopped_.store(false);
   auto result = xTaskCreatePinnedToCore(
       [](void *arg) { static_cast<AssistLiveComponent *>(arg)->run_(); },
       "assist_live", 8192, this, 0, nullptr, 0);
   if (result != pdPASS) {
     vQueueDelete(queue_);
     queue_ = nullptr;
+    worker_stopped_.store(true);
     mark_failed();
   }
   if (player_ != nullptr)
@@ -372,8 +482,8 @@ void AssistLiveComponent::setup() {
 
 void AssistLiveComponent::emit_event(Stage stage, uint64_t device_ms,
                                      const char *canonical_data) {
-  if (queue_ == nullptr || exhausted_ || canonical_data == nullptr ||
-      strnlen(canonical_data, 257) > 256) {
+  if (stop_requested_.load() || queue_ == nullptr || exhausted_ ||
+      canonical_data == nullptr || strnlen(canonical_data, 257) > 256) {
     ++dropped_;
     return;
   }
@@ -418,24 +528,50 @@ void AssistLiveComponent::run_() {
   std::unique_ptr<EventSender> sender;
 #ifdef USE_ASSIST_LIVE_WEBSOCKET
   if (websocket_)
-    sender.reset(new WebSocketSender(endpoint));
+    sender.reset(new WebSocketSender(endpoint, &initialization_failures_));
 #endif
   if (!sender)
-    sender.reset(new UdpSender(endpoint));
+    sender.reset(new UdpSender(endpoint, &initialization_failures_));
   Event event;
-  while (true) {
-    if (xQueueReceive(queue_, &event, portMAX_DELAY) != pdTRUE)
+  while (!stop_requested_.load()) {
+    const bool was_pending = sender->pending();
+    const bool confirmed = sender->poll();
+    if (was_pending && !sender->pending() && !confirmed)
+      ++dropped_;
+    refused_.store(sender->refused_events());
+    if (sender->pending()) {
+      vTaskDelay(pdMS_TO_TICKS(10));
       continue;
+    }
+    if (xQueueReceive(queue_, &event, pdMS_TO_TICKS(20)) != pdTRUE)
+      continue;
+    if (stop_requested_.load()) {
+      ++dropped_;
+      break;
+    }
     if (!valid_event_data(event.data)) {
       ++dropped_;
       continue;
     }
     auto packet =
         encode_event(device_, event, key_.data(), key_.size(), sign_hmac);
-    if (packet.empty() || !sender->send(packet))
+    if (packet.empty() || (!sender->send(packet) && !sender->pending()))
       ++dropped_;
-    initialization_failures_.store(sender->initialization_failures());
+    refused_.store(sender->refused_events());
   }
+  if (sender->pending())
+    ++dropped_;
+  sender.reset();
+  mbedtls_platform_zeroize(key_.data(), key_.size());
+  worker_stopped_.store(true);
+  vTaskDelete(nullptr);
+}
+
+void AssistLiveComponent::on_shutdown() {
+  // The worker owns its transports and key reads until teardown completes.
+  stop_requested_.store(true);
+  if (worker_stopped_.load())
+    mbedtls_platform_zeroize(key_.data(), key_.size());
 }
 
 void AssistLiveComponent::dump_config() {
@@ -445,6 +581,8 @@ void AssistLiveComponent::dump_config() {
                 static_cast<unsigned>(dropped_.load()));
   ESP_LOGCONFIG(TAG, "Sender initialization failures: %u",
                 static_cast<unsigned>(initialization_failures_.load()));
+  ESP_LOGCONFIG(TAG, "Refused timing events: %u",
+                static_cast<unsigned>(refused_.load()));
 }
 
 } // namespace assist_live

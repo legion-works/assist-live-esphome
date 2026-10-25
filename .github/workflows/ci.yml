@@ -40,7 +40,16 @@ jobs:
           UV_LINK_MODE: copy
       - name: Require the system C++ compiler
         run: c++ --version
-      - run: task lint typecheck unit vectors bootstrap source-only secrets privacy
+      - run: task lint typecheck unit vectors bootstrap source-only secrets
+      - name: Check public tree
+        run: |
+          set -eu
+          curl -fsSL https://raw.githubusercontent.com/legion-works/assist-live/main/tools/check_public_tree.py -o "$RUNNER_TEMP/check_public_tree.py"
+          set --
+          if [ -n "${PRIVATE_DENYLIST:-}" ]; then
+            set -- --private-denylist "$PRIVATE_DENYLIST"
+          fi
+          uv run --no-project --python 3.14 python "$RUNNER_TEMP/check_public_tree.py" --history --root . "$@"
 
   compile:
     runs-on: ubuntu-latest

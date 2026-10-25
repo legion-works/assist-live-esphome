@@ -87,6 +87,8 @@ def run_cpp_vectors(path: str | Path) -> str:
                 "-Wextra",
                 "-Werror",
                 "-I",
+                str(ROOT / "tests/native/include"),
+                "-I",
                 str(COMPONENT),
                 str(ROOT / "tests/native/event_vectors.cpp"),
                 str(COMPONENT / "event_codec.cpp"),
@@ -162,6 +164,13 @@ def run_cpp_runtime() -> str:
             assert "Timing sender initialization failed; retry in 5 s" in output
             assert "Sender initialization failures: 1" in output
             assert_secret_absent(output, RUNTIME_KEY)
+            if websocket:
+                for code in (1008, 1009):
+                    assert (
+                        f"Timing event refused: close code {code}; retry in 60 s"
+                        in output
+                    )
+                assert "Refused timing events: 1" in output
         access = Path(directory) / "private_key.cpp"
         access.write_text(
             '#include "assist_live.h"\n'

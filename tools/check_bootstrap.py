@@ -318,6 +318,7 @@ def main():
         git_output("ls-files", "-co", "--exclude-standard", "-z").split("\0")
     )
     published.discard("")
+    published.difference_update(git_output("ls-files", "--deleted", "-z").split("\0"))
     require("tests/fixtures/secrets.yaml" in published, "fake secrets are not ignored")
     check_privacy(published, args.denylist)
     print("PASS firmware bootstrap")

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "assist_live.cpp"
+#include "mbedtls/platform_util.h"
 #include <barrier>
 #include <cassert>
 #include <iostream>
@@ -20,7 +21,7 @@ public:
 };
 class TestComponent : public AssistLiveComponent {
 public:
-  ~TestComponent() override {
+  ~TestComponent() {
     if (queue_ != nullptr)
       vQueueDelete(queue_);
   }
@@ -38,6 +39,18 @@ public:
     }
   }
 };
+static TestComponent *shutdown_component = nullptr;
+static size_t expected_shutdown_wipes = 0;
+static int expected_shutdown_closes = 0;
+static void check_cleanup_before_task_delete() {
+  assert(shutdown_component->teardown());
+  assert(test_zeroized_sizes.size() == expected_shutdown_wipes);
+#ifdef USE_ASSIST_LIVE_WEBSOCKET
+  assert(test_destroy_calls == expected_shutdown_closes);
+#else
+  assert(test_socket_closes == expected_shutdown_closes);
+#endif
+}
 
 int main() {
   Resolver resolver;
@@ -122,6 +135,37 @@ int main() {
     assert(recovering.send(packet));
   }
   test_connect_result = -1;
+  {
+    test_connect_result = 0;
+    WebSocketSender closed(ws_endpoint);
+    assert(closed.send(packet));
+    int writes = test_text_writes;
+    int destroyed = test_destroy_calls;
+    test_frames.push_back({8, std::string{"\x03\xf0", 2}});
+    assert(!closed.send(packet) && test_text_writes == writes);
+    assert(test_destroy_calls == destroyed + 2);
+    test_time_us += 60000000;
+    assert(closed.send(packet));
+    test_close_after_write = 1009;
+    assert(!closed.send(packet));
+    test_frames.clear();
+  }
+  {
+    ResolvedEndpoint cap_endpoint("timing-server.invalid", 8765, ws_resolver);
+    WebSocketSender capped(cap_endpoint);
+    test_connect_result = -1;
+    test_http_status = 503;
+    for (uint64_t delay : {5000, 10000, 20000, 40000, 60000, 60000}) {
+      int calls = test_connect_calls;
+      assert(!capped.send(packet) && test_connect_calls == calls + 1);
+      test_time_us += (delay - 1) * 1000;
+      assert(!capped.send(packet) && test_connect_calls == calls + 1);
+      test_time_us += 1000;
+    }
+    test_http_status = 0;
+  }
+  assert(test_propagate_control);
+  test_connect_result = -1;
   test_time_us = 123456789000;
 #endif
   TestComponent component;
@@ -129,7 +173,20 @@ int main() {
   const char canary[] = "fake-secret-byte-array-1234567890";
   std::memcpy(key.data(), canary, 32);
   component.set_device("anonymous-satellite");
+  auto wipes = test_zeroized_sizes.size();
   component.set_hmac_key(key);
+  assert(test_zeroized_sizes.size() == wipes + 1 &&
+         test_zeroized_sizes.back() == 32);
+  assert(std::memcmp(key.data(), canary, 32) == 0);
+  {
+    auto before = test_zeroized_sizes.size();
+    {
+      TestComponent cleanup;
+      cleanup.set_hmac_key(key);
+      cleanup.on_shutdown();
+    }
+    assert(test_zeroized_sizes.size() == before + 2);
+  }
   component.set_server("192.0.2.1");
   esphome::media_player::MediaPlayer player;
   int stock_calls = 0;
@@ -212,6 +269,7 @@ int main() {
   for (int i = 0; i < 16; ++i)
     component.emit_event(Stage::WAKE_DETECTED, component.monotonic_ms());
   component.drain_worker();
+  assert(test_zeroized_sizes.size() >= wipes + 17);
   assert(component.dropped_events() == 17);
   assert(test_dns_calls == 1);
   component.dump_config();
@@ -278,4 +336,153 @@ int main() {
   initialization_failure.drain_worker();
   assert(initialization_failure.sender_initialization_failures() == 1);
   initialization_failure.dump_config();
+#ifdef USE_ASSIST_LIVE_WEBSOCKET
+  test_connect_result = 0;
+  for (int code : {1008, 1009}) {
+    Resolver refusing_resolver;
+    ResolvedEndpoint refusing_endpoint("timing-server.invalid", 8765,
+                                       refusing_resolver);
+    WebSocketSender refusing(refusing_endpoint);
+    test_close_after_write = code;
+    int writes = test_text_writes, handles = test_handle_id;
+    assert(!refusing.send(packet) && !refusing.pending());
+    assert(refusing.refused_events() == 1 && test_text_writes == writes + 1);
+    test_frames.clear();
+    test_time_us += 59999000;
+    assert(!refusing.send(packet) && test_text_writes == writes + 1);
+    test_time_us += 1000;
+    assert(refusing.send(packet) && test_handle_id == handles + 4);
+  }
+  {
+    Resolver pending_resolver;
+    ResolvedEndpoint pending_endpoint("timing-server.invalid", 8765,
+                                      pending_resolver);
+    WebSocketSender waiting(pending_endpoint);
+    test_auto_pong = false;
+    assert(!waiting.send(packet) && waiting.pending());
+    test_frames.push_back({10, "mismatch"});
+    assert(!waiting.poll() && waiting.pending());
+    test_frames.push_back({9, "server-ping"});
+    assert(!waiting.poll() && waiting.pending());
+    assert(test_last_pong == "server-ping");
+    test_time_us += 1000000;
+    assert(!waiting.poll() && !waiting.pending());
+    test_auto_pong = true;
+  }
+  for (bool close_pending : {false, true}) {
+    test_dns_success = true;
+    TestComponent pending;
+    pending.set_device("anonymous-satellite");
+    pending.set_hmac_key(key);
+    pending.set_server("192.0.2.1");
+    pending.set_websocket(true);
+    pending.setup();
+    test_auto_pong = false;
+    if (close_pending) {
+      test_delay_hook = []() {
+        test_frames.push_back({8, std::string{"\x03\xf0", 2}});
+        test_delay_hook = nullptr;
+      };
+    }
+    int writes = test_text_writes;
+    pending.emit_event(Stage::WAKE_DETECTED, 1);
+    pending.drain_worker();
+    assert(pending.dropped_events() == 1 && test_text_writes == writes + 1);
+    assert(pending.refused_events() == (close_pending ? 1 : 0));
+    pending.dump_config();
+    test_auto_pong = true;
+  }
+  test_dns_success = false;
+  {
+    TestComponent shutdown;
+    shutdown.set_device("anonymous-satellite");
+    shutdown.set_hmac_key(key);
+    shutdown.set_server("192.0.2.1");
+    shutdown.set_websocket(true);
+    shutdown.setup();
+    test_dns_success = true;
+    test_auto_pong = false;
+    auto wipes_before = test_zeroized_sizes.size();
+    int destroyed = test_destroy_calls;
+    expected_shutdown_wipes = wipes_before + 2;
+    expected_shutdown_closes = destroyed + 2;
+    test_task_delete_hook = check_cleanup_before_task_delete;
+    shutdown_component = &shutdown;
+    test_delay_hook = []() {
+      shutdown_component->on_shutdown();
+      assert(!shutdown_component->teardown());
+      test_delay_hook = nullptr;
+    };
+    shutdown.emit_event(Stage::WAKE_DETECTED, 1);
+    shutdown.drain_worker();
+    test_task_delete_hook = nullptr;
+    assert(shutdown.teardown());
+    assert(test_destroy_calls == destroyed + 2);
+    assert(test_zeroized_sizes.size() == wipes_before + 2);
+    assert(shutdown.dropped_events() == 1);
+    shutdown.emit_event(Stage::WAKE_DETECTED, 2);
+    assert(shutdown.empty() && shutdown.dropped_events() == 2);
+    test_auto_pong = true;
+    test_dns_success = false;
+  }
+  {
+    Resolver read_resolver;
+    ResolvedEndpoint read_endpoint("timing-server.invalid", 8765,
+                                   read_resolver);
+    WebSocketSender reader(read_endpoint);
+    assert(reader.send(packet));
+    int destroyed = test_destroy_calls;
+    test_read_error = true;
+    assert(!reader.send(packet) && test_destroy_calls == destroyed + 2);
+    test_read_error = false;
+    test_time_us += 4999000;
+    int calls = test_connect_calls;
+    assert(!reader.send(packet) && test_connect_calls == calls);
+    test_time_us += 1000;
+    assert(reader.send(packet));
+    for (int i = 0; i < 4; ++i)
+      test_frames.push_back({10, "unsolicited"});
+    assert(!reader.poll());
+  }
+  {
+    Resolver failure_resolver;
+    ResolvedEndpoint failure_endpoint("timing-server.invalid", 8765,
+                                      failure_resolver);
+    std::atomic<uint32_t> failures{0};
+    WebSocketSender live_counter(failure_endpoint, &failures);
+    fail_tcp_attempts = 1;
+    assert(!live_counter.send(packet) && failures.load() == 1);
+  }
+  assert(test_handle_id == test_destroy_calls + 2);
+#else
+  {
+    TestComponent shutdown;
+    shutdown.set_device("anonymous-satellite");
+    shutdown.set_hmac_key(key);
+    shutdown.set_server("192.0.2.1");
+    shutdown.setup();
+    shutdown_component = &shutdown;
+    test_empty_queue_hook = []() {
+      shutdown_component->on_shutdown();
+      assert(!shutdown_component->teardown());
+      test_empty_queue_hook = nullptr;
+    };
+    auto wipes_before = test_zeroized_sizes.size();
+    int closed_before = test_socket_closes;
+    expected_shutdown_wipes = wipes_before + 2;
+    expected_shutdown_closes = closed_before + 1;
+    test_task_delete_hook = check_cleanup_before_task_delete;
+    shutdown.emit_event(Stage::WAKE_DETECTED, 1);
+    shutdown.drain_worker();
+    test_task_delete_hook = nullptr;
+    assert(shutdown.teardown() && test_socket_closes == closed_before + 1);
+    assert(test_zeroized_sizes.size() == wipes_before + 2);
+  }
+  {
+    std::atomic<uint32_t> failures{0};
+    UdpSender live_counter(udp_endpoint, &failures);
+    fail_socket_attempts = 1;
+    assert(!live_counter.send(packet) && failures.load() == 1);
+  }
+#endif
 }

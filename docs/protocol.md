@@ -29,8 +29,13 @@ Set `assist_live_server` to an IPv4 address or a host name.
 The worker resolves host names to IPv4 addresses, not the audio callback or the ESPHome loop.
 The cache lasts 60 seconds. A send failure clears the cache.
 
-A resolution or connection failure has a five-second retry interval.
+A resolution or transport failure has a five-second retry interval.
 The component drops events during that interval and counts the drops.
+
+HTTP `503` uses retry intervals of 5, 10, 20, 40, and then 60 seconds.
+The maximum interval stays at 60 seconds until a subsequent event receives transport confirmation.
+Close codes `1008` and `1009` increment the refusal counter and write a warning.
+They select a 60-second retry interval for subsequent events. The refused event is not sent again.
 
 The `transport` option is necessary and has no default.
 The example selects `udp`. The second compile fixture selects `websocket`.
@@ -45,7 +50,8 @@ Build output contains the key and the Wi-Fi password. A text search cannot alway
 Keep C++ build output, logs with secrets enabled, and firmware images private.
 Do not publish them. The key has no getter, entity, or diagnostic field.
 
-The configuration dump prints the transport, drop count, and sender initialization failure count.
+The configuration dump prints the transport, drop count, refusal count, and sender initialization failure count.
+The failure site updates the initialization counter directly, without a subsequent event.
 The `_DeviceKey` value prints only `[redacted]`, with or without `--show-secrets`.
 Its YAML representation applies only to that value type.
 
@@ -105,7 +111,11 @@ A sender initialization failure increments a different counter and writes a warn
 The worker retries initialization after five seconds. It drops events during that interval.
 The two transport variants use this retry rule.
 
-The public-data check runs in `task check` and CI. It examines private paths, private addresses, and Git history.
+The authoritative public-data checker is in the assist-live integration repository.
+It examines private paths, private addresses, and Git history. CI downloads that file from `main` and uses Python 3.14.
+If `../assist-live/tools/check_public_tree.py` is a file, `task check` uses it.
+Without it, the task prints `NOT CHECKED public tree`.
+
 An external `PRIVATE_DENYLIST` is optional. An unset value gives `NOT CHECKED private denylist`.
 
 Each start uses eight hardware-RNG bytes for a new boot identifier.
@@ -115,7 +125,37 @@ Callbacks copy events into a 16-item queue with 0 wait time.
 
 The worker runs on core 0 at `priority` 0. It signs and sends the events, not on the audio path.
 WebSocket connect and write calls have 250 ms and 50 ms timeouts in that worker.
+
+WebSocket control-frame reads use a `0 ms` timeout and a 125-byte buffer.
+Each poll reads at most four frames. More frames close the transport, as does a frame that is not full.
+With no queued event, the WebSocket worker polls at intervals of at most 20 ms, subject to task scheduling.
+After a close or error, the worker calls `esp_transport_destroy` for each transport.
+The next connection uses new transport objects.
+
 No event retry queue can increase without a limit.
+
+The WebSocket sender keeps at most one event pending after a local write.
+It sends an eight-byte ping after that event and waits for a pong with the same payload.
+The read timeout stays at `0 ms`.
+The server processes the event result before its next receive call. A refusal closes the connection before that pong.
+
+A close, send failure, or one-second confirmation timeout drops and counts the pending event one time.
+Other queued events stay in the bounded queue until confirmation or failure.
+An event has no retry queue. The sender replies to server ping and close frames.
+Transport confirmation is not a server acknowledgement or proof of durable storage.
+With a missing pong, the counter can include an event that the server accepted.
+
+The codec clears its HMAC digest after use, also after a signing failure.
+The key setter clears its temporary copy.
+
+`on_shutdown()` tells the worker to stop. `teardown()` stays `false` until the worker stops.
+The worker closes its socket or transports and clears the stored key before it stops.
+With no worker, the shutdown hook clears the key directly.
+The two queue variants use a 20 ms receive timeout so shutdown can wake an empty worker.
+
+`Application::safe_reboot()` waits through `teardown()`.
+`Application::reboot()` does not wait for the worker.
+A resolver wait or the shutdown deadline can stop cleanup before it is complete.
 
 UDP has no server acknowledgement.
 A local send alone cannot prove that the server accepted an event.
@@ -134,6 +174,9 @@ Access date: 2026-10-25 (UTC).
 - [ESPHome 2026.10.0 secret output](https://github.com/esphome/esphome/blob/2026.10.0/esphome/yaml_util.py#L1335-L1341): `represent_secret` sends the secret name, not its value.
 - [ESPHome 2026.10.0 sensitive-value output](https://github.com/esphome/esphome/blob/2026.10.0/esphome/yaml_util.py#L1364-L1375): `represent_sensitive` can write value bytes between terminal control codes.
 - [ESP-IDF 5.5.6 hardware RNG](https://github.com/espressif/esp-idf/blob/v5.5.6/components/esp_hw_support/include/esp_random.h#L35-L43): `esp_fill_random` fills a buffer through the hardware RNG.
+- [ESPHome 2026.10.0 lifecycle hooks](https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/component.h#L177-L191): `on_shutdown()` and `teardown()` are virtual lifecycle methods.
+- [ESPHome 2026.10.0 restart paths](https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/application.cpp#L293-L315): `safe_reboot()` waits for teardown. `reboot()` does not.
+- [ESP-IDF 5.5.6 WebSocket receive path](https://github.com/espressif/esp-idf/blob/v5.5.6/components/tcp_transport/transport_ws.c#L690-L748): the caller can receive control frames and select the read timeout.
 
 The RNG source at lines 20 to 22 specifies enabled Wi-Fi or Bluetooth for values with physical entropy.
 The component starts after Wi-Fi setup. The stock Voice PE package enables the radio.

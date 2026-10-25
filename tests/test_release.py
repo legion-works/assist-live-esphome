@@ -613,3 +613,30 @@ def test_changed_config_baseline_text_is_refused(tmp_path: Path) -> None:
         BASELINE.replace("GPIO0 is a strapping pin", "GPIO0 changed warning")
     )
     assert check_log(log, compile_log=True)
+
+
+@pytest.mark.parametrize("content", [None, "[broken", "dependencies: {}"])
+def test_build_lock_error_names_compiled_source(tmp_path, content):
+    from tools.check_release import check_component_versions
+
+    lock = tmp_path / "dependencies.lock"
+    if content is None:
+        lock.unlink()
+    else:
+        lock.write_text(content)
+    errors = check_component_versions(tmp_path)
+    assert "cannot read compiled IDF version source: dependencies.lock" in errors
+    assert "cannot read fixture IDF baseline version source" not in errors
+
+
+def test_explicit_missing_source_still_fails(tmp_path, monkeypatch, capsys):
+    from tools.check_release import main
+
+    monkeypatch.setattr(
+        sys, "argv", ["check_release.py", "--source-only", str(tmp_path / "missing.py")]
+    )
+    assert main() == 1
+    assert (
+        "FAIL source-only release: missing.py: unreadable source file"
+        in capsys.readouterr().out
+    )
