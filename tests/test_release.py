@@ -1,4 +1,5 @@
 import io
+import json
 import struct
 import subprocess
 import sys
@@ -241,6 +242,13 @@ def component_versions(tmp_path):
         "  espressif/esp-tflite-micro:\n    version: 1.3.3~1\n"
         "  idf:\n    version: 5.5.6\n"
     )
+    (tmp_path / "build").mkdir(exist_ok=True)
+    (tmp_path / "build/CMakeCache.txt").write_text(
+        "CMAKE_COMMAND:INTERNAL=/test-tools/cmake/3.30.2/bin/cmake\n"
+        "CMAKE_CACHE_MAJOR_VERSION:INTERNAL=3\n"
+        "CMAKE_CACHE_MINOR_VERSION:INTERNAL=30\n"
+        "CMAKE_CACHE_PATCH_VERSION:INTERNAL=2\n"
+    )
 
 
 @pytest.mark.parametrize("offset", [0, 4096])
@@ -271,6 +279,123 @@ def test_compile_checks_component_versions(tmp_path, change):
     log = tmp_path / "compile.log"
     log.write_text("INFO Successfully compiled program.\n")
     assert check_log(log, compile_log=True)
+
+
+CI_CMAKE_DEPRECATIONS = (
+    "Compatibility with CMake < 3.10 will be removed from a future version of CMake. "
+    "Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax "
+    "to tell CMake that the project requires at least <min> but has been updated "
+    "to work with policies introduced by <max> or earlier."
+)
+
+
+def test_ci_deprecation_fragment_reports_cmake_drift(tmp_path):
+    from tools.check_release import check_log
+
+    cache = tmp_path / "build/CMakeCache.txt"
+    cache.write_text(
+        "CMAKE_COMMAND:INTERNAL=/runner-tools/cmake/4.4.4/bin/cmake\n"
+        "CMAKE_CACHE_MAJOR_VERSION:INTERNAL=4\n"
+        "CMAKE_CACHE_MINOR_VERSION:INTERNAL=4\n"
+        "CMAKE_CACHE_PATCH_VERSION:INTERNAL=4\n"
+    )
+    log = tmp_path / "compile.log"
+    log.write_text(
+        "".join(
+            f"CMake Warning (deprecated) at managed_components/{component}/"
+            "CMakeLists.txt:"
+            f"{line} (cmake_minimum_required):\n  {CI_CMAKE_DEPRECATIONS}\n\n"
+            for component, line in [
+                ("espressif__esp-nn", 1),
+                ("espressif__esp-tflite-micro", 3),
+            ]
+            * 2
+        )
+        + "INFO Successfully compiled program.\n"
+    )
+    errors = check_log(log, compile_log=True)
+    assert any(
+        "CMake toolchain mismatch" in error and "4.4.4" in error for error in errors
+    )
+    assert sum("new warning" in error for error in errors) == 4
+
+
+@pytest.mark.parametrize("change", ["missing", "version", "command"])
+def test_compile_refuses_cmake_cache_drift(tmp_path, change):
+    from tools.check_release import check_log
+
+    cache = tmp_path / "build/CMakeCache.txt"
+    if change == "missing":
+        cache.unlink()
+    elif change == "version":
+        cache.write_text(
+            cache.read_text().replace("VERSION:INTERNAL=30", "VERSION:INTERNAL=31")
+        )
+    else:
+        cache.write_text(
+            cache.read_text().replace(
+                "CMAKE_COMMAND:INTERNAL=", "OTHER_COMMAND:INTERNAL="
+            )
+        )
+    log = tmp_path / "compile.log"
+    log.write_text("INFO Successfully compiled program.\n")
+    assert any("CMake toolchain" in error for error in check_log(log, compile_log=True))
+
+
+@pytest.mark.parametrize("version,exit_code", [("3.30.2", 0), ("4.4.4", 1)])
+def test_cmake_preflight_reports_path_and_version(
+    tmp_path, monkeypatch, capsys, version, exit_code
+):
+    from tools import check_release
+
+    binary = tmp_path / "cmake"
+    binary.write_text(f"#!/bin/sh\nprintf 'cmake version {version}\\n'\n")
+    binary.chmod(0o700)
+    monkeypatch.setattr(check_release, "resolve_cmake", lambda: binary, raising=False)
+    monkeypatch.setattr(sys, "argv", ["check_release.py", "--toolchain"])
+    assert check_release.main() == exit_code
+    output = capsys.readouterr().out
+    assert str(binary) in output
+    assert version in output
+    assert ("PASS" if exit_code == 0 else "FAIL") + " CMake toolchain" in output
+
+
+def test_resolver_checks_manifest_and_uses_framework_environment(tmp_path, monkeypatch):
+    from esphome.espidf import framework
+
+    from tools.check_release import resolve_cmake
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    manifest = tools / "tools.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "tools": [
+                    {
+                        "name": "cmake",
+                        "versions": [{"name": "3.30.2", "status": "recommended"}],
+                    }
+                ]
+            }
+        )
+    )
+    binary = tmp_path / "bin/cmake"
+    binary.parent.mkdir()
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o700)
+    monkeypatch.setattr(
+        framework,
+        "check_esp_idf_install",
+        lambda *args, **kwargs: (tmp_path, tmp_path / "penv"),
+    )
+    monkeypatch.setattr(
+        framework, "get_framework_env", lambda *args: {"PATH": str(binary.parent)}
+    )
+    assert resolve_cmake() == binary
+    manifest.write_text(manifest.read_text().replace("3.30.2", "3.31.0"))
+    with pytest.raises(ValueError, match="CMake pin mismatch"):
+        resolve_cmake()
 
 
 @pytest.mark.parametrize(

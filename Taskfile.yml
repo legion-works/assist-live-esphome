@@ -9,6 +9,7 @@ env:
   ESPHOME_DATA_DIR: '{{.WORK_ROOT}}/data'
   ESPHOME_BUILD_PATH: '{{.WORK_ROOT}}/build'
   ESPHOME_DEFAULT_COMPILE_PROCESS_LIMIT: '2'
+  ESPHOME_IDF_DEFAULT_TOOLS_FORCE: 'required;cmake'
 
 tasks:
   check:
@@ -65,6 +66,7 @@ tasks:
 
   compile:
     cmds:
+      - uv run --locked python tools/check_release.py --toolchain
       - mkdir -p "{{.WORK_ROOT}}"
       - |
         if uv run --locked esphome compile tests/fixtures/voice-pe.yaml >"{{.WORK_ROOT}}/compile.log" 2>&1; then
@@ -79,6 +81,7 @@ tasks:
 
   compile-probe:
     cmds:
+      - uv run --locked python tools/check_release.py --toolchain
       - mkdir -p "{{.WORK_ROOT}}"
       - |
         set -eu

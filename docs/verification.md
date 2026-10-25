@@ -1133,3 +1133,117 @@ INF no leaks found
 
 The different Python 3.12 command gave `121 passed in 15.03s`.
 `actionlint` gave exit code 0.
+
+## CMake toolchain parity
+
+Date: 2026-10-25 (UTC).
+
+The local firmware build used the ESPHome-managed CMake `3.30.2`.
+Its compile log runs `<IDF_TOOLS_PATH>/tools/cmake/3.30.2/bin/cmake`.
+Its `CMakeCache.txt` records that command and version `3.30.2`.
+The local system command reports `cmake version 4.4.4`, but that is not the firmware build's executable.
+
+The hosted compiler used an Ubuntu runner image. Its software list contains CMake `4.4.4`.
+The hosted log contains four third-party deprecation warnings, from the ESP-NN and TFLite Micro `cmake_minimum_required` calls.
+The hosted step printed only the last compile-log lines. It did not record the resolved CMake executable path or version command.
+The historical executable path is not available from that log.
+
+By default, ESPHome `2026.10.0` does not install optional CMake when `PATH` has a CMake executable.
+The `ESPHOME_IDF_DEFAULT_TOOLS_FORCE` setting changes that selection.
+ESP-IDF `5.5.6` marks CMake as `on_request` and recommends version `3.30.2`.
+Its tool resolver prefers an installed managed version. Without that version, an optional tool can use the system `PATH`.
+The build can use a different CMake version on each system.
+
+Task and CI use the managed CMake installation.
+The pre-compile check uses the same ESPHome framework environment as the firmware build.
+It checks the ESP-IDF recommendation and the actual executable version against `3.30.2`.
+It prints the executable path and version and gives a named failure on mismatch.
+The compile-log check also checks the command and version from the actual build cache.
+
+The third-party deprecations are not in the warning baseline.
+The pinned build must give 0 new warnings.
+
+Initial regression command:
+
+```sh
+uv run --locked pytest tests/test_release.py tests/test_ci.py -q --tb=short \
+  -k 'ci_deprecation_fragment or cmake_cache_drift or cmake_preflight or resolver_checks_manifest or cmake_is_forced'
+```
+
+```text
+FAILED tests/test_release.py::test_ci_deprecation_fragment_reports_cmake_drift
+8 failed, 69 deselected in 0.27s
+```
+
+The test used all four hosted deprecation lines and a build cache for CMake `4.4.4`.
+It stopped because the checker did not identify the toolchain mismatch.
+The release and CI suites then gave `77 passed in 0.56s`.
+
+Pre-compile check:
+
+```sh
+ESPHOME_IDF_DEFAULT_TOOLS_FORCE='required;cmake' \
+  uv run --locked python tools/check_release.py --toolchain
+```
+
+```text
+Skipping cmake@3.30.2 (already installed)
+INFO CMake toolchain: path=<IDF_TOOLS_PATH>/tools/cmake/3.30.2/bin/cmake version=3.30.2
+PASS CMake toolchain: version=3.30.2
+```
+
+Sources, accessed 2026-10-25 (UTC):
+
+- ESP-IDF tool list: <https://github.com/espressif/esp-idf/blob/v5.5.6/tools/tools.json>, `cmake` entry.
+- ESP-IDF tool resolution: <https://github.com/espressif/esp-idf/blob/v5.5.6/tools/idf_tools.py#L2312-L2342>.
+- ESPHome installation selection: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/espidf/framework.py#L1284-L1296>.
+- ESPHome tool-path resolution: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/espidf/get_idf_tool_paths.py#L31-L45>.
+- ESPHome build executable selection: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/espidf/toolchain.py#L200-L209>.
+- Hosted image software list: <https://github.com/actions/runner-images/blob/ubuntu26/20261012.163/images/ubuntu/Ubuntu2604-Readme.md>, CMake `4.4.4`.
+
+No device, flash, or upload operation occurred.
+
+The two managed components each use `cmake_minimum_required(VERSION 3.5)`.
+A minimal project with that same call reproduces the hosted deprecation with system CMake `4.4.4`.
+The same project gives no deprecation with the managed CMake `3.30.2`.
+Each configuration command gives exit code 0.
+
+The complete gate used a new external build root:
+
+```sh
+ESPHOME_WORK_DIR="$BUILD_ROOT" UV_LINK_MODE=copy task check
+UV_PROJECT_ENVIRONMENT="$FLOOR_ENV" UV_LINK_MODE=copy \
+  uv run --locked --python 3.12 pytest tests/ -q
+actionlint
+```
+
+The complete gate gave exit code 0:
+
+```text
+8 files already formatted
+All checks passed!
+Success: no issues found in 8 source files
+129 passed in 13.56s
+129 passed in 13.05s
+PASS firmware bootstrap
+PASS source-only release
+PASS config warnings: new_warnings=0
+INFO CMake toolchain: path=<IDF_TOOLS_PATH>/tools/cmake/3.30.2/bin/cmake version=3.30.2
+PASS CMake toolchain: version=3.30.2
+INFO Successfully compiled program.
+INFO CMake build: path=<IDF_TOOLS_PATH>/tools/cmake/3.30.2/bin/cmake version=3.30.2
+PASS compile warnings: new_warnings=0
+PASS probe staged; no upload or device connection
+INFO Successfully compiled program.
+INFO CMake build: path=<IDF_TOOLS_PATH>/tools/cmake/3.30.2/bin/cmake version=3.30.2
+PASS compile warnings: new_warnings=0
+INF no leaks found
+INF 7 commits scanned.
+INF no leaks found
+```
+
+The different Python 3.12 command gave `129 passed in 15.84s`.
+`actionlint` gave exit code 0.
+Six changes to the installation policy, manifest check, version checks, and check order each made a selected test stop with a failure.
+The stock fixture and probe each compiled from a new build tree with CMake `3.30.2` and 0 new warnings.
+No hosted run of this change occurred at this time.

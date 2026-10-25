@@ -19,6 +19,12 @@ The default work root is `${XDG_CACHE_HOME:-$HOME/.cache}/assist-live-esphome`.
 Set `ESPHOME_WORK_DIR` to change it.
 The Taskfile sets `ESPHOME_DATA_DIR` to `<work-root>/data` and `ESPHOME_BUILD_PATH` to `<work-root>/build`.
 
+The firmware checks use CMake `3.30.2`, the recommended version in the ESP-IDF `5.5.6` tool list.
+Task and CI use the ESPHome-managed CMake installation through `ESPHOME_IDF_DEFAULT_TOOLS_FORCE=required;cmake`.
+The pre-compile check prints the selected executable path and version. A different version stops the check.
+The compile-log check also reads the actual build's `CMakeCache.txt` and stops on a version mismatch.
+The system `cmake --version` does not identify the compiler's CMake when ESPHome selects a managed copy.
+
 Run the documentation checker on each Markdown file that you change.
 Do not add build output or actual credentials to Git.
 Do not flash the compile fixture or connect to a device for these checks.

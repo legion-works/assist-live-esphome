@@ -49,6 +49,7 @@ jobs:
         esphome: ['2026.10.0']
     env:
       ESPHOME_VERSION: ${{ matrix.esphome }}
+      ESPHOME_IDF_DEFAULT_TOOLS_FORCE: 'required;cmake'
     # The stock Voice PE package fetches voice_kit from dev before the local pin.
     # GitHub and raw.githubusercontent.com access must stay enabled.
     steps:
@@ -90,6 +91,7 @@ jobs:
           EXPECTED: ${{ matrix.esphome }}
         run: |
           test "$(uv run --locked esphome version)" = "Version: $EXPECTED"
+          uv run --locked python tools/check_release.py --toolchain
       - run: task config compile compile-probe secrets
 
   ci-complete:

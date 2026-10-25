@@ -182,3 +182,19 @@ def test_history_scans_require_complete_checkout():
         ), name
         checked.add(name)
     assert {"checks", "compile"} <= checked
+
+
+def test_cmake_is_forced_and_checked_before_each_build():
+    taskfile = yaml.safe_load((ROOT / "Taskfile.yml").read_text())
+    assert taskfile["env"]["ESPHOME_IDF_DEFAULT_TOOLS_FORCE"] == "required;cmake"
+    for name in ("compile", "compile-probe"):
+        commands = "\n".join(taskfile["tasks"][name]["cmds"])
+        assert commands.index("check_release.py --toolchain") < commands.index(
+            "esphome compile"
+        )
+    compile_job = load_workflow("ci.yml")["jobs"]["compile"]
+    assert compile_job["env"]["ESPHOME_IDF_DEFAULT_TOOLS_FORCE"] == "required;cmake"
+    runs = "\n".join(step.get("run", "") for step in compile_job["steps"])
+    assert runs.index("check_release.py --toolchain") < runs.index(
+        "task config compile"
+    )

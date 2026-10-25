@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import argparse
 import io
+import json
+import os
 import re
+import shutil
 import subprocess
 import tarfile
 import zipfile
@@ -10,6 +13,8 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+CMAKE_VERSION = "3.30.2"
+IDF_VERSION = "5.5.6"
 COMPILED_SUFFIXES = {".bin", ".elf", ".map", ".uf2", ".img", ".hex"}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 WARNING_LEVEL = re.compile(
@@ -88,6 +93,71 @@ CMAKE_BASELINE = {
         "Missing kconfig option.  Re-run the build process...",
     ): ("5.5.6", "dependencies.lock:dependencies.idf.version"),
 }
+
+
+def resolve_cmake() -> Path:
+    from esphome.espidf.framework import check_esp_idf_install, get_framework_env
+
+    targets = None if os.environ.get("CI") else ["esp32s3"]
+    framework, python_env = check_esp_idf_install(IDF_VERSION, targets=targets)
+    manifest = json.loads((framework / "tools/tools.json").read_text())
+    recommended = [
+        version["name"]
+        for tool in manifest["tools"]
+        if tool["name"] == "cmake"
+        for version in tool["versions"]
+        if version["status"] == "recommended"
+    ]
+    if recommended != [CMAKE_VERSION]:
+        raise ValueError(
+            f"CMake pin mismatch: IDF recommends {recommended}, "
+            f"expected {CMAKE_VERSION}"
+        )
+    environment = get_framework_env(framework, python_env)
+    executable = shutil.which("cmake", path=environment["PATH"])
+    if executable is None:
+        raise ValueError("CMake executable missing from ESP-IDF environment")
+    return Path(executable)
+
+
+def check_cmake_toolchain() -> bool:
+    try:
+        executable = resolve_cmake()
+        result = subprocess.run(
+            [str(executable), "--version"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        match = re.search(r"(?m)^cmake version (\S+)$", result.stdout)
+        version = match[1] if match else "unknown"
+        print(f"INFO CMake toolchain: path={executable} version={version}")
+        if version != CMAKE_VERSION:
+            raise ValueError(
+                f"CMake toolchain mismatch: expected {CMAKE_VERSION}, found {version}"
+            )
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"FAIL CMake toolchain: {error}")
+        return False
+    print(f"PASS CMake toolchain: version={CMAKE_VERSION}")
+    return True
+
+
+def read_build_cmake(build_root: Path) -> tuple[str, str]:
+    try:
+        text = (build_root / "build/CMakeCache.txt").read_text()
+        fields = dict(re.findall(r"(?m)^(CMAKE_\w+):(?:INTERNAL|FILEPATH)=(.+)$", text))
+        executable = fields["CMAKE_COMMAND"]
+        version = ".".join(
+            fields[f"CMAKE_CACHE_{part}_VERSION"]
+            for part in ("MAJOR", "MINOR", "PATCH")
+        )
+        if not Path(executable).is_absolute():
+            raise ValueError("non-absolute CMake command")
+        return executable, version
+    except (OSError, ValueError, KeyError, UnicodeError) as error:
+        raise ValueError("CMake toolchain cache missing or invalid") from error
 
 
 def check_component_versions(build_root: Path) -> list[str]:
@@ -258,6 +328,16 @@ def check_log(
         if compile_log or re.search(r"(?m)^\s*CMake (?:Deprecation )?Warning\b", text)
         else []
     )
+    if compile_log:
+        try:
+            executable, version = read_build_cmake(build_root or path.parent)
+            if version != CMAKE_VERSION:
+                failures.append(
+                    f"CMake toolchain mismatch: path={executable} version={version}; "
+                    f"expected {CMAKE_VERSION}"
+                )
+        except ValueError as error:
+            failures.append(str(error))
     lines = text.splitlines()
     for index, line in enumerate(lines):
         if re.match(r"^\s*CMake (?:Deprecation )?Warning\b", line):
@@ -291,14 +371,23 @@ def check_log(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-only", action="store_true")
+    parser.add_argument("--toolchain", action="store_true")
     parser.add_argument("--compile-log", type=Path)
     parser.add_argument("--config-log", type=Path)
     parser.add_argument("--build-root", type=Path)
     parser.add_argument("paths", type=Path, nargs="*")
     args = parser.parse_args()
-    failed = False
+    failed = args.toolchain and not check_cmake_toolchain()
     for path, label in ((args.compile_log, "compile"), (args.config_log, "config")):
         if path is not None:
+            if label == "compile":
+                try:
+                    executable, version = read_build_cmake(
+                        args.build_root or path.parent
+                    )
+                    print(f"INFO CMake build: path={executable} version={version}")
+                except ValueError:
+                    pass
             errors = check_log(path, label == "compile", args.build_root)
             for error in errors:
                 print(f"FAIL {label} warnings: {error}")
@@ -325,8 +414,10 @@ def main() -> int:
         failed |= bool(errors)
     elif args.paths:
         parser.error("paths require --source-only")
-    elif args.compile_log is None and args.config_log is None:
-        parser.error("select --source-only, --compile-log, or --config-log")
+    elif args.compile_log is None and args.config_log is None and not args.toolchain:
+        parser.error(
+            "select --source-only, --compile-log, --config-log, or --toolchain"
+        )
     return int(failed)
 
 
