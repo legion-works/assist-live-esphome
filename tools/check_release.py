@@ -7,8 +7,10 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
-COMPILED_SUFFIXES = {".bin", ".elf", ".map", ".uf2", ".img"}
+COMPILED_SUFFIXES = {".bin", ".elf", ".map", ".uf2", ".img", ".hex"}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 WARNING_LEVEL = re.compile(
     r"^\s*(?:(?:\[[0-9TZ:.,+ -]+\]|[0-9TZ:.,+ -]+)\s*)?(WARNING\b.*)$"
@@ -71,6 +73,92 @@ COMPILER_SOURCE_ROOTS = {
     "esphome/micro-opus": "build/esp-idf/esphome__micro-opus/opus-staged/",
     "espressif/esp-tflite-micro": "managed_components/espressif__esp-tflite-micro/",
 }
+CMAKE_WARNING = re.compile(
+    r"^CMake Warning at (?P<path>.+?):(?P<line>\d+) \(message\):$"
+)
+CMAKE_BASELINE = {
+    ("esp-idf", "tools/cmake/build.cmake", 631, ""): (
+        "5.5.6",
+        "dependencies.lock:dependencies.idf.version",
+    ),
+    (
+        "esp-idf",
+        "tools/cmake/project.cmake",
+        765,
+        "Missing kconfig option.  Re-run the build process...",
+    ): ("5.5.6", "dependencies.lock:dependencies.idf.version"),
+}
+
+
+def check_component_versions(build_root: Path) -> list[str]:
+    failures = []
+    for version, source in sorted(
+        set(COMPILER_BASELINE.values()) | set(CMAKE_BASELINE.values())
+    ):
+        filename, field = source.split(":", 1)
+        component = field.removeprefix("dependencies.").removesuffix(".version")
+        try:
+            lock = yaml.safe_load((build_root / filename).read_text())
+            actual = lock["dependencies"][component]["version"]
+        except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError):
+            failures.append(f"cannot read baseline version source: {source}")
+            continue
+        if actual != version:
+            failures.append(f"baseline version mismatch: {source}: expected {version}")
+    return failures
+
+
+def cmake_warning_is_baselined(header: str, message: str) -> bool:
+    warning = CMAKE_WARNING.fullmatch(header)
+    if warning is None:
+        return False
+    path = Path(warning["path"])
+    if ".." in path.parts or "components/assist_live/" in path.as_posix():
+        return False
+    if path.parent.name != "cmake" or path.parent.parent.name != "tools":
+        return False
+    framework = path.parent.parent.parent
+    if framework.name != "framework-espidf" and framework.parent.name != "frameworks":
+        return False
+    key = ("esp-idf", "tools/cmake/" + path.name, int(warning["line"]), message)
+    baseline = CMAKE_BASELINE.get(key)
+    if baseline is None:
+        return False
+    version, _ = baseline
+    return framework.name == "framework-espidf" or framework.name == version
+
+
+def esp_image_header(data: bytes, offset: int = 0) -> bool:
+    header = data[offset : offset + 24]
+    # ESP-IDF 5.5.6 esp_app_format.h:81-110 defines the 24-byte header.
+    return (
+        len(header) == 24
+        and header[0] == 0xE9
+        and 1 <= header[1] <= 16
+        and header[2] <= 5
+        and header[3] & 0x0F in {0, 1, 2, 15}
+        and header[3] >> 4 <= 7
+        and header[19:23] == b"\0" * 4
+        and header[23] in {0, 1}
+    )
+
+
+def merged_esp_image(data: bytes) -> bool:
+    if not esp_image_header(data, 0x1000):
+        return False
+    # ESP32-S3 factory images contain a partition table and an app partition.
+    for offset in range(0x8000, min(len(data), 0x9000) - 31, 32):
+        entry = data[offset : offset + 32]
+        if entry[:2] != b"\xaa\x50":
+            break
+        app_offset = int.from_bytes(entry[4:8], "little")
+        if (
+            entry[2] == 0
+            and app_offset >= 0x10000
+            and esp_image_header(data, app_offset)
+        ):
+            return True
+    return False
 
 
 def compiler_warning_is_baselined(line: str) -> bool:
@@ -99,7 +187,11 @@ def check_content(name: str, data: bytes, depth: int = 0) -> list[str]:
     failures = []
     if Path(name).suffix.lower() in COMPILED_SUFFIXES:
         failures.append(f"{name}: compiled artifact suffix")
-    if data.startswith((b"\x7fELF", b"\xe9", b"UF2\n")) or data[4096:4097] == b"\xe9":
+    if (
+        data.startswith((b"\x7fELF", b"UF2\n"))
+        or esp_image_header(data)
+        or merged_esp_image(data)
+    ):
         failures.append(f"{name}: compiled image magic")
     stream = io.BytesIO(data)
     # Python 3.12 zipfile.is_zipfile does not restore the stream position.
@@ -154,13 +246,30 @@ def check_release(paths: list[Path]) -> list[str]:
     return failures
 
 
-def check_log(path: Path, compile_log: bool) -> list[str]:
+def check_log(
+    path: Path, compile_log: bool, build_root: Path | None = None
+) -> list[str]:
     try:
         text = ANSI.sub("", path.read_text())
     except (OSError, UnicodeError):
         return ["unreadable log"]
-    failures = []
-    for line in text.splitlines():
+    failures = (
+        check_component_versions(build_root or path.parent)
+        if compile_log or re.search(r"(?m)^\s*CMake (?:Deprecation )?Warning\b", text)
+        else []
+    )
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*CMake (?:Deprecation )?Warning\b", line):
+            body = []
+            for continuation in lines[index + 1 :]:
+                if not continuation.startswith(("  ", "\t")):
+                    break
+                body.append(continuation.strip())
+            message = " ".join(body)
+            if not cmake_warning_is_baselined(line.strip(), message):
+                failures.append(f"new warning: {line} {message}".strip())
+            continue
         warning = WARNING_LEVEL.match(line)
         if warning is not None:
             message = warning.group(1).strip()
@@ -184,12 +293,13 @@ def main() -> int:
     parser.add_argument("--source-only", action="store_true")
     parser.add_argument("--compile-log", type=Path)
     parser.add_argument("--config-log", type=Path)
+    parser.add_argument("--build-root", type=Path)
     parser.add_argument("paths", type=Path, nargs="*")
     args = parser.parse_args()
     failed = False
     for path, label in ((args.compile_log, "compile"), (args.config_log, "config")):
         if path is not None:
-            errors = check_log(path, label == "compile")
+            errors = check_log(path, label == "compile", args.build_root)
             for error in errors:
                 print(f"FAIL {label} warnings: {error}")
             if not errors:

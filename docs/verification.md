@@ -941,3 +941,195 @@ The privacy self-scan gave 0 denylist, local-path, and private-address findings.
 `git diff --check` gave exit code 0.
 
 Device trial: not run (no test device at this time).
+
+## Pre-flash source checks
+
+Date: 2026-10-25 (UTC).
+
+The probe starts only after task creation gives `pdPASS`.
+An unsuccessful task creation logs an error. The loop tries a maximum of three times.
+The device identifier comes from the ESPHome node name and stays in the decoded events and trial report.
+
+An armed run must have an explicit `--bind` address.
+It refuses `docs/research/q1-device-probe.md` as a trial output path.
+The procedure uses `docs/research/q1-device-trial.md` for the trial result.
+
+The source-only check refuses `.hex` images and checks ESP image headers and factory partition offsets.
+An isolated `0xE9` byte at offset 4096 does not identify an image.
+The warning check compares component versions with the build's `dependencies.lock`.
+It compares CMake warnings with the ESP-IDF `5.5.6` baseline and checks the `idf` entry in the build's `dependencies.lock`.
+Only the two documented upstream CMake notices are in that baseline.
+
+Initial regression command:
+
+```sh
+uv run --locked pytest tests/test_release.py tests/test_probe_device.py tests/test_ci.py \
+  -q --tb=short -k 'not resolved'
+```
+
+```text
+32 failed, 63 passed, 2 deselected in 2.16s
+FAILED tests/test_release.py::test_new_cmake_warning_is_refused
+```
+
+The new CMake warning tests gave `assert False` because the checker ignored those warnings.
+The native ESPHome framework-layout tests also stopped before the path check accepted that layout.
+The configuration keeps the same warning baseline for native ESPHome and PlatformIO framework paths.
+
+Static and floor-version commands:
+
+```sh
+uv run --locked ruff format --check .
+uv run --locked ruff check .
+uv run --locked mypy
+UV_PROJECT_ENVIRONMENT="$FLOOR_ENV" UV_LINK_MODE=copy \
+  uv run --locked --python 3.12 pytest tests/ -q
+actionlint
+```
+
+```text
+8 files already formatted
+All checks passed!
+Success: no issues found in 8 source files
+106 passed in 13.55s
+```
+
+`actionlint` gave exit code 0.
+18 changes to the new guards each made the selected tests stop with a failure.
+A native C++ harness checked the start guard with one unsuccessful task creation followed by success.
+It also checked task-creation failures again and again, and the three-try limit.
+Changes to the start guard, retry limit, and error log each stopped a runtime assertion.
+
+All Taskfile `uv run` commands use `--locked`.
+The complete gate includes Python 3.12 tests in the ignored `.venv-floor` directory.
+The CI compile task copies and compiles the probe with obviously fake credentials in runner temporary storage.
+The Gitleaks check and warning check apply to the source output of each configuration.
+The root secret gate also checks Git history. CI checks out the complete history.
+
+Device trial: not run (no test device at this time).
+No flash, upload, or device connection occurred.
+
+The complete firmware gate used this command:
+
+```sh
+ESPHOME_WORK_DIR="$BUILD_ROOT" UV_LINK_MODE=copy task check
+```
+
+Result: exit code 0. The default Python and the local Python 3.12 suites each ran 112 tests.
+The stock fixture and the probe each compiled and gave 0 new warnings.
+
+```text
+8 files already formatted
+All checks passed!
+Success: no issues found in 8 source files
+112 passed in 15.03s
+112 passed in 11.15s
+PASS firmware bootstrap
+PASS source-only release
+PASS config warnings: new_warnings=0
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+PASS probe staged; no upload or device connection
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+INF no leaks found
+INF 6 commits scanned.
+INF no leaks found
+```
+
+The different Python 3.12 command above gave `112 passed in 14.74s`.
+The actual compiled app and factory image bytes also stopped the source-only content check with a `.txt` name.
+The checks used synthetic data and compile-only credentials. No device supplied data.
+
+## Trial identifier privacy and native startup tests
+
+Date: 2026-10-25 (UTC).
+
+The stock package adds a hardware-address suffix to the runtime node name.
+The reader replaces the full device identifier with a per-trial HMAC-SHA256 identifier before it stores each measurement.
+This also removes the configured name from the public output.
+Only external scratch storage keeps the random 32-byte salt, in a private file with mode `0600`.
+The same trial keeps the same identifier. A different trial uses a new salt.
+
+The trial report and its `.events.jsonl` file contain decoded data with trial identifiers.
+Only the external packet log can contain the raw identifier and signed packets.
+The salt and packet log must not be in a repository.
+No trial result file is available before a receiver run.
+
+The initial regression command selected privacy, native startup, and CI history tests:
+
+```sh
+uv run --locked pytest tests/test_probe_device.py tests/test_ci.py -q --tb=short \
+  -k 'mac_suffix or trial_token or trial_salt or native_start_guard or missing_native_compiler or history_scans'
+```
+
+```text
+FAILED tests/test_probe_device.py::test_mac_suffix_is_private_in_report_and_evidence
+AssertionError: FAIL native start guard: missing harness source
+7 failed, 2 passed, 55 deselected in 0.19s
+```
+
+The native harness source is `tests/native/start_guard.cpp`.
+The test compiles the actual start function from `tests/probes/transport_probe.h` with the system C++ compiler.
+It runs the control and three changed functions that set the guard before success, remove the retry limit, or remove the error log.
+An unavailable compiler stops the test with a named failure. The test does not skip that condition.
+The CI Ubuntu runner supplies the system C++ compiler.
+
+The CI contract test checks `fetch-depth: 0` before each Git-history secret check.
+The check includes Taskfile dependencies.
+The `feature.yml` template uses the firmware-specific request about credentials, device names, addresses, and recordings.
+All operator commands in the device probe procedure use `uv run --locked`.
+
+The unit and static checks used these commands:
+
+```sh
+uv run --locked ruff format --check .
+uv run --locked ruff check .
+uv run --locked mypy
+uv run --locked pytest tests/ -q
+```
+
+```text
+All checks passed!
+Success: no issues found in 8 source files
+121 passed in 15.48s
+```
+
+Eight negative tests changed the identifier, salt, checkout, and start-guard rules.
+Each change made the selected test stop with a failure.
+The three C++ changes compiled before their runtime assertions stopped.
+Device trial: not run (no test device at this time).
+No flash, upload, or device connection occurred.
+
+The complete gate and Python 3.12 check used these commands:
+
+```sh
+ESPHOME_WORK_DIR="$BUILD_ROOT" UV_LINK_MODE=copy task check
+UV_PROJECT_ENVIRONMENT="$FLOOR_ENV" UV_LINK_MODE=copy \
+  uv run --locked --python 3.12 pytest tests/ -q
+actionlint
+```
+
+The complete gate gave exit code 0:
+
+```text
+8 files already formatted
+All checks passed!
+Success: no issues found in 8 source files
+121 passed in 14.80s
+121 passed in 13.48s
+PASS firmware bootstrap
+PASS source-only release
+PASS config warnings: new_warnings=0
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+PASS probe staged; no upload or device connection
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+INF no leaks found
+INF 6 commits scanned.
+INF no leaks found
+```
+
+The different Python 3.12 command gave `121 passed in 15.03s`.
+`actionlint` gave exit code 0.

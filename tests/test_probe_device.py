@@ -3,6 +3,8 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -32,9 +34,10 @@ def packet(
     trial=0,
     time=100,
     boot="0123456789abcdef",
+    device="assist-live-probe",
 ):
     body = (
-        f"1|voice-pe-probe|{boot}|{seq}|{time}|{stage}|"
+        f"1|{device}|{boot}|{seq}|{time}|{stage}|"
         f"device,voice-pe-probe,{REV},{RUN},{transport},{trial},0"
     )
     tag = hmac.new(TOKEN.encode(), body.encode(), hashlib.sha256).hexdigest()
@@ -263,7 +266,15 @@ def test_authenticated_packet_and_all_signed_fields():
 
 
 @pytest.mark.parametrize(
-    "field", ["firmware_revision", "t_device_ms", "seq", "boot_id", "device_origin"]
+    "field",
+    [
+        "firmware_revision",
+        "t_device_ms",
+        "seq",
+        "boot_id",
+        "device_origin",
+        "device_id",
+    ],
 )
 def test_evidence_refuses_missing_device_fields(field):
     from tools.probe_device import decode_event, valid_evidence
@@ -495,3 +506,275 @@ def test_websocket_reader_refuses_fragments_unmasked_and_oversize(header):
             await read_frame(reader)
 
     asyncio.run(read())
+
+
+def test_device_identity_is_retained_and_cannot_change(tmp_path):
+    from tools.probe_device import EvidenceReader, decode_event, write_report
+
+    event = decode_event(packet(device="test-node"), TOKEN, RUN)
+    assert event["device_id"] == "test-node"
+    reader = EvidenceReader(TOKEN, RUN)
+    assert reader.accept(packet(device="test-node"), "udp", 1000)
+    identifier = reader.events[0]["device_id"]
+    assert identifier.startswith("device-")
+    assert identifier != "test-node"
+    assert not reader.accept(packet(1, device="other-node"), "udp", 1010)
+    report = tmp_path / "trial.md"
+    write_report(report, reader, 1000, 10, recorded=True)
+    assert f"Device ID: `{identifier}`." in report.read_text()
+
+
+def test_report_cannot_replace_research_record(tmp_path, monkeypatch):
+    from tools import probe_device
+
+    monkeypatch.setattr(probe_device, "ROOT", tmp_path)
+    record = tmp_path / "docs/research/q1-device-probe.md"
+    record.parent.mkdir(parents=True)
+    record.write_text("Hand-written procedure\n")
+    with pytest.raises(ValueError, match="research record"):
+        probe_device.write_report(
+            record, probe_device.EvidenceReader(TOKEN, RUN), 1000, 10
+        )
+    assert record.read_text() == "Hand-written procedure\n"
+
+
+def test_cli_refuses_research_output_before_reading_secrets(tmp_path, monkeypatch):
+    from tools import probe_device
+
+    monkeypatch.setattr(probe_device, "ROOT", tmp_path)
+
+    def forbidden(*args):
+        pytest.fail("a protected report path must stop before secret access")
+
+    monkeypatch.setattr(probe_device, "read_secrets", forbidden)
+    with pytest.raises(SystemExit):
+        probe_device.main(
+            [
+                "--arm",
+                "--bind",
+                "192.0.2.2",
+                "--secrets",
+                str(tmp_path / "external.yaml"),
+                "--report",
+                str(tmp_path / "docs/research/q1-device-probe.md"),
+            ]
+        )
+
+
+@pytest.mark.parametrize("device", ["", "bad name", "a" * 64, "node`"])
+def test_decoder_refuses_invalid_node_names(device):
+    from tools.probe_device import decode_event
+
+    with pytest.raises(ValueError):
+        decode_event(packet(device=device), TOKEN, RUN)
+
+
+def test_armed_run_requires_bind_before_receiver(tmp_path, monkeypatch):
+    from tools import probe_device
+
+    async def forbidden(*args):
+        pytest.fail("missing bind must not open a receiver")
+
+    monkeypatch.setattr(probe_device, "receive", forbidden)
+    with pytest.raises(SystemExit):
+        probe_device.main(
+            [
+                "--arm",
+                "--secrets",
+                str(secrets_file(tmp_path)),
+                "--report",
+                str(tmp_path / "trial.md"),
+            ]
+        )
+    assert not (tmp_path / f"q1-{RUN}.jsonl").exists()
+
+
+def test_cli_prints_error_text(tmp_path, capsys):
+    from tools.probe_device import main
+
+    assert (
+        main(
+            [
+                "stage",
+                "--config",
+                str(ROOT / "tests/probes/transport.yaml"),
+                "--secrets",
+                str(ROOT / "tests/fixtures/secrets.yaml"),
+                "--output",
+                str(tmp_path / "out"),
+            ]
+        )
+        == 1
+    )
+    assert (
+        "ValueError: compile fixture secrets are not permitted"
+        in capsys.readouterr().out
+    )
+
+
+def test_key_count_error_uses_required_set(tmp_path, monkeypatch):
+    from tools import probe_device
+
+    monkeypatch.setattr(probe_device, "REQUIRED", {*probe_device.REQUIRED, "extra"})
+    with pytest.raises(ValueError, match="all 6 non-empty"):
+        probe_device.read_secrets(secrets_file(tmp_path))
+
+
+def test_firmware_start_guard_follows_success_and_bounds_retries():
+    source = (ROOT / "tests/probes/transport_probe.h").read_text()
+    start = source[source.index("inline void start(") :]
+    assert "attempts >= 3" in start
+    assert "++attempts" in start
+    assert start.index("started = true") > start.index("result == pdPASS")
+    assert "ESP_LOGE" in start
+    assert "esphome::App.get_name().c_str()" in start
+    assert '"1|voice-pe-probe|"' not in source
+
+
+def test_mac_suffix_is_private_in_report_and_evidence(tmp_path, monkeypatch):
+    from tools import probe_device
+
+    raw_id = "assist-live-probe-a1b2c3"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    repository = tmp_path / "repository"
+    (repository / ".git").mkdir(parents=True)
+    report = repository / "trial.md"
+
+    async def recorded(reader, bind, seconds, raw):
+        assert reader.accept(packet(device=raw_id), "udp", 1000)
+        assert reader.accept(packet(1, device=raw_id), "udp", 1010)
+
+    monkeypatch.setattr(probe_device, "receive", recorded)
+    assert (
+        probe_device.main(
+            [
+                "--arm",
+                "--bind",
+                "192.0.2.2",
+                "--secrets",
+                str(secrets_file(scratch)),
+                "--report",
+                str(report),
+            ]
+        )
+        == 0
+    )
+    for output in repository.iterdir():
+        if output.is_file():
+            assert raw_id not in output.read_text()
+            assert "-a1b2c3" not in output.read_text()
+    rows = [
+        json.loads(row)
+        for row in report.with_suffix(".events.jsonl").read_text().splitlines()
+    ]
+    identifier = rows[0]["device_id"]
+    assert identifier.startswith("device-")
+    assert rows[1]["device_id"] == identifier
+    assert f"Device ID: `{identifier}`." in report.read_text()
+    salts = list(scratch.glob("*.salt"))
+    assert len(salts) == 1
+    assert len(salts[0].read_bytes()) == 32
+    assert salts[0].stat().st_mode & 0o777 == 0o600
+    assert not list(repository.rglob("*.salt"))
+
+
+def test_trial_token_is_stable_with_private_salt_and_changes_between_trials(tmp_path):
+    from tools.probe_device import EvidenceReader, load_trial_salt
+
+    salt = load_trial_salt(tmp_path, RUN)
+    assert load_trial_salt(tmp_path, RUN) == salt
+    identifiers = []
+    for key in (salt, salt, load_trial_salt(tmp_path, "f" * 32)):
+        reader = EvidenceReader(TOKEN, RUN, salt=key)
+        assert reader.accept(packet(device="assist-live-probe-a1b2c3"), "udp", 1000)
+        identifiers.append(reader.events[0]["device_id"])
+    assert identifiers[0] == identifiers[1]
+    assert identifiers[0] != identifiers[2]
+
+
+def test_trial_salt_refuses_repository_directory(tmp_path):
+    from tools.probe_device import load_trial_salt
+
+    (tmp_path / ".git").mkdir()
+    with pytest.raises(ValueError, match="outside.*repository"):
+        load_trial_salt(tmp_path, RUN)
+    assert not list(tmp_path.glob("*.salt"))
+
+
+def run_native_start(tmp_path, mutant):
+    compiler = shutil.which("c++") or shutil.which("g++")
+    if compiler is None:
+        pytest.fail("FAIL native start guard: system C++ compiler not found")
+    harness = ROOT / "tests/native/start_guard.cpp"
+    assert harness.is_file(), "FAIL native start guard: missing harness source"
+    source = (ROOT / "tests/probes/transport_probe.h").read_text()
+    start = source[
+        source.index("inline void start(") : source.index(
+            "} // namespace transport_probe"
+        )
+    ]
+    if mutant != "control":
+        before, after = {
+            "early-guard": ("  ++attempts;", "  started = true;\n  ++attempts;"),
+            "no-bound": ("started || attempts >= 3", "started"),
+            "no-error-log": ("ESP_LOGE(", "if (false) ESP_LOGE("),
+        }[mutant]
+        assert before in start
+        start = start.replace(before, after, 1)
+    (tmp_path / "probe_start.inc").write_text(start)
+    executable = tmp_path / "start-guard"
+    result = subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            str(tmp_path),
+            str(harness),
+            "-o",
+            str(executable),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, (
+        f"FAIL native start guard compile: {result.stdout}{result.stderr}"
+    )
+    return [
+        subprocess.run(
+            [str(executable), *args],
+            capture_output=True,
+            check=False,
+            timeout=10,
+            cwd=tmp_path,
+        ).returncode
+        for args in ([], ["all-fail"])
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutant,expected",
+    [
+        ("control", [0, 0]),
+        ("early-guard", [-signal.SIGABRT, -signal.SIGABRT]),
+        ("no-bound", [0, -signal.SIGABRT]),
+        ("no-error-log", [-signal.SIGABRT, -signal.SIGABRT]),
+    ],
+)
+def test_native_start_guard(tmp_path, mutant, expected):
+    assert run_native_start(tmp_path, mutant) == expected
+
+
+def test_missing_native_compiler_has_named_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(
+        pytest.fail.Exception,
+        match=r"FAIL native start guard: system C\+\+ compiler not found",
+    ):
+        run_native_start(tmp_path, "control")

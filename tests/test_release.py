@@ -1,4 +1,5 @@
 import io
+import struct
 import subprocess
 import sys
 import tarfile
@@ -18,7 +19,7 @@ def test_binary_release_is_refused(tmp_path: Path) -> None:
     assert check_release([image])
 
 
-@pytest.mark.parametrize("suffix", [".elf", ".map", ".uf2", ".factory.img"])
+@pytest.mark.parametrize("suffix", [".elf", ".map", ".uf2", ".factory.img", ".hex"])
 def test_compiled_suffix_is_refused(tmp_path: Path, suffix: str) -> None:
     from tools.check_release import check_release
 
@@ -28,7 +29,20 @@ def test_compiled_suffix_is_refused(tmp_path: Path, suffix: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "magic", [b"\x7fELF", b"\xe9\x03\x00\x00", b"\x00" * 4096 + b"\xe9"]
+    "magic",
+    [
+        b"\x7fELF",
+        b"\xe9\x03\x00\x00" + b"\0" * 20,
+        b"\xff" * 4096
+        + b"\xe9\x03\x00\x00"
+        + b"\0" * 20
+        + b"\xff" * (0x8000 - 4096 - 24)
+        + struct.pack("<HBBII16sI", 0x50AA, 0, 0, 0x10000, 0x100000, b"app", 0)
+        + b"\xff" * (0x10000 - 0x8000 - 32)
+        + b"\xe9\x03\x00\x00"
+        + b"\0" * 20,
+    ],
+    ids=["elf", "app", "factory"],
 )
 def test_renamed_image_is_refused(tmp_path: Path, magic: bytes) -> None:
     from tools.check_release import check_release
@@ -218,6 +232,145 @@ def test_owned_source_cannot_use_compiler_baseline(tmp_path: Path, source: str) 
         "INFO Successfully compiled program.\n"
     )
     assert check_log(log, compile_log=True)
+
+
+@pytest.fixture(autouse=True)
+def component_versions(tmp_path):
+    (tmp_path / "dependencies.lock").write_text(
+        "dependencies:\n  esphome/micro-opus:\n    version: 0.4.1\n"
+        "  espressif/esp-tflite-micro:\n    version: 1.3.3~1\n"
+        "  idf:\n    version: 5.5.6\n"
+    )
+
+
+@pytest.mark.parametrize("offset", [0, 4096])
+def test_random_magic_byte_is_not_an_image(offset):
+    from tools.check_release import check_content
+
+    assert check_content("source.txt", b"a" * offset + b"\xe9" + b"a" * 100) == []
+
+
+def test_app_header_is_refused():
+    from tools.check_release import check_content
+
+    header = struct.pack("<BBBBI", 0xE9, 3, 0, 0x2F, 0x40370000) + b"\0" * 16
+    assert check_content("renamed.txt", header)
+
+
+@pytest.mark.parametrize("change", ["version", "missing", "source"])
+def test_compile_checks_component_versions(tmp_path, change):
+    from tools.check_release import check_log
+
+    lock = tmp_path / "dependencies.lock"
+    if change == "version":
+        lock.write_text(lock.read_text().replace("0.4.1", "0.4.2"))
+    elif change == "source":
+        lock.write_text(lock.read_text().replace("esphome/micro-opus", "other/opus"))
+    else:
+        lock.unlink()
+    log = tmp_path / "compile.log"
+    log.write_text("INFO Successfully compiled program.\n")
+    assert check_log(log, compile_log=True)
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "CMake Deprecation Warning at other.cmake:1 (message):",
+        "  CMake Warning at other.cmake:1 (message):",
+    ],
+)
+def test_other_cmake_warning_forms_are_refused(tmp_path, header):
+    from tools.check_release import check_log
+
+    log = tmp_path / "compile.log"
+    log.write_text(header + "\n  notice\n\nINFO Successfully compiled program.\n")
+    assert any("new warning" in error for error in check_log(log, compile_log=True))
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "CMake Warning at other.cmake:1 (message):\n  new notice\n\n",
+        "CMake Warning (dev) at other.cmake:1 (message):\n  new notice\n\n",
+        "CMake Warning:\n  unknown notice\n\n",
+        "CMake Warning at framework-espidf/tools/cmake/project.cmake:765 (message):\n"
+        "  changed notice\n\n",
+    ],
+)
+def test_new_cmake_warning_is_refused(tmp_path, diagnostic):
+    from tools.check_release import check_log
+
+    log = tmp_path / "compile.log"
+    log.write_text(diagnostic + "INFO Successfully compiled program.\n")
+    assert any("new warning" in error for error in check_log(log, compile_log=True))
+
+
+@pytest.mark.parametrize(
+    "name,line,message",
+    [
+        ("build", 631, ""),
+        ("project", 765, "Missing kconfig option.  Re-run the build process..."),
+    ],
+)
+@pytest.mark.parametrize("framework_path", ["framework-espidf", "frameworks/5.5.6"])
+def test_upstream_cmake_baseline_checks_framework_version(
+    tmp_path, name, line, message, framework_path
+):
+    from tools.check_release import check_log
+
+    framework = tmp_path / framework_path
+    framework.mkdir(parents=True)
+    log = tmp_path / "compile.log"
+    log.write_text(
+        f"CMake Warning at {framework}/tools/cmake/{name}.cmake:{line} (message):\n"
+        + (f"  {message}\n" if message else "")
+        + "\nCall Stack (most recent call first):\n  CMakeLists.txt:1 (project)\n\n"
+        "INFO Successfully compiled program.\n"
+    )
+    assert check_log(log, compile_log=True) == []
+    lock = tmp_path / "dependencies.lock"
+    lock.write_text(lock.read_text().replace("5.5.6", "5.5.7"))
+    assert check_log(log, compile_log=True)
+
+
+@pytest.mark.parametrize("change", ["line", "path", "message", "missing-version"])
+def test_cmake_baseline_fields_are_exact(tmp_path, change):
+    from tools.check_release import check_log
+
+    framework = tmp_path / "framework-espidf"
+    framework.mkdir()
+    if change == "missing-version":
+        lock = tmp_path / "dependencies.lock"
+        lock.write_text(lock.read_text().replace("  idf:\n    version: 5.5.6\n", ""))
+    source = "project" if change != "path" else "other"
+    line = 765 if change != "line" else 766
+    message = "Missing kconfig option.  Re-run the build process..."
+    if change == "message":
+        message += " changed"
+    log = tmp_path / "compile.log"
+    log.write_text(
+        f"CMake Warning at {framework}/tools/cmake/{source}.cmake:{line} (message):\n"
+        f"  {message}\n\nINFO Successfully compiled program.\n"
+    )
+    errors = check_log(log, compile_log=True)
+    expected = (
+        "baseline version source" if change == "missing-version" else "new warning"
+    )
+    assert any(expected in error for error in errors)
+
+
+def test_native_cmake_baseline_uses_compiled_tree_version(tmp_path):
+    from tools.check_release import check_log
+
+    log = tmp_path / "compile.log"
+    log.write_text(
+        f"CMake Warning at {tmp_path}/frameworks/5.5.6/"
+        "tools/cmake/build.cmake:631 (message):\n"
+        "Call Stack (most recent call first):\n  CMakeLists.txt:3 (project)\n\n"
+        "INFO Successfully compiled program.\n"
+    )
+    assert check_log(log, compile_log=True) == []
 
 
 @pytest.mark.parametrize("changed", ["path", "line", "flag", "message"])

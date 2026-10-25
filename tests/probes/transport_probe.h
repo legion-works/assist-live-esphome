@@ -13,11 +13,13 @@
 #include "freertos/task.h"
 #include "lwip/sockets.h"
 #include "mbedtls/md.h"
+#include "esphome/core/application.h"
+#include "esphome/core/log.h"
 
 namespace transport_probe {
 
 struct Probe {
-  std::string token, server, revision, run_id, boot;
+  std::string token, server, revision, run_id, boot, device_id;
   sockaddr_in address{};
 
   static uint64_t now() { return esp_timer_get_time() / 1000; }
@@ -38,7 +40,7 @@ struct Probe {
 
   std::string event(unsigned seq, const char *stage, const char *transport,
                     unsigned trial = 0, uint64_t elapsed = 0) const {
-    std::string body = "1|voice-pe-probe|" + boot + "|" + std::to_string(seq) +
+    std::string body = "1|" + device_id + "|" + boot + "|" + std::to_string(seq) +
                        "|" + std::to_string(now()) + "|" + stage +
                        "|device,voice-pe-probe," + revision + "," + run_id +
                        "," + transport + "," + std::to_string(trial) + "," +
@@ -161,10 +163,12 @@ struct Probe {
 inline void start(const char *token, const char *server, const char *revision,
                   const char *run) {
   static bool started = false;
-  if (started)
+  static unsigned attempts = 0;
+  if (started || attempts >= 3)
     return;
-  started = true;
-  auto *probe = new Probe{token, server, revision, run, "", {}};
+  ++attempts;
+  auto *probe = new Probe{token, server, revision, run, "",
+                          esphome::App.get_name().c_str(), {}};
   // Core 0 and priority 0 keep this worker below the core 1 ESPHome loop.
   BaseType_t result = xTaskCreatePinnedToCore(
       [](void *argument) {
@@ -174,8 +178,12 @@ inline void start(const char *token, const char *server, const char *revision,
         vTaskDelete(nullptr);
       },
       "transport_probe", 8192, probe, 0, nullptr, 0);
-  if (result != pdPASS)
+  if (result == pdPASS) {
+    started = true;
+  } else {
     delete probe;
+    ESP_LOGE("transport_probe", "Worker creation failed (attempt %u of 3)", attempts);
+  }
 }
 
 } // namespace transport_probe

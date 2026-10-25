@@ -7,6 +7,16 @@
 | `tests/test_package.py` | Source-only boundary test |
 | `tests/fixtures/voice-pe.yaml` | Compile-only configuration |
 | `tests/fixtures/secrets.yaml` | Four fake values for the compile fixture |
+| `tests/probes/transport.yaml` | Device-trial configuration that extends stock Voice PE |
+| `tests/probes/transport_probe.h` | Authenticated UDP and WebSocket probe worker |
+| `tests/native/start_guard.cpp` | Native harness for the actual worker start function and its three mutations |
+| `tests/test_probe_device.py` | Probe, external file copy, and measurement tests |
+| `tools/probe_device.py` | External file copy and bounded receiver for device trials |
+| `tools/check_release.py` | Source-only boundary and build-warning checks |
+| `tests/test_release.py` | Image detection and warning-baseline tests |
+| `docs/research/q1-device-probe.md` | Device probe procedure and sources |
+| `docs/research/q1-device-trial.md` | Output from an armed run. No file before a trial |
+| `docs/research/q1-device-trial.events.jsonl` | Decoded measurements with trial identifiers. No file before a trial |
 | `tools/check_bootstrap.py` | Source, package, license, and privacy checks |
 | `docs/verification.md` | Test commands, results, and source URLs |
 | `pyproject.toml` | Python requirements and development dependencies |

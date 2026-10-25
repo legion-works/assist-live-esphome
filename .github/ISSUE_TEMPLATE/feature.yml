@@ -4,7 +4,7 @@ labels: [enhancement]
 body:
   - type: markdown
     attributes:
-      value: This project is experimental and has no release. Do not include personal data.
+      value: This project is experimental and has no release. Do not include actual credentials, device names, addresses, or recordings.
   - type: textarea
     id: problem
     attributes:

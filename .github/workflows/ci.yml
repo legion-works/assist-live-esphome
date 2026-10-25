@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
           python-version: '3.12'
@@ -51,6 +53,8 @@ jobs:
     # GitHub and raw.githubusercontent.com access must stay enabled.
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
       - name: Select external build root
         run: echo "ESPHOME_WORK_DIR=$RUNNER_TEMP/esphome-$ESPHOME_VERSION" >> "$GITHUB_ENV"
       - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
@@ -85,8 +89,8 @@ jobs:
         env:
           EXPECTED: ${{ matrix.esphome }}
         run: |
-          test "$(uv run esphome version)" = "Version: $EXPECTED"
-      - run: task config compile secrets
+          test "$(uv run --locked esphome version)" = "Version: $EXPECTED"
+      - run: task config compile compile-probe secrets
 
   ci-complete:
     runs-on: ubuntu-latest

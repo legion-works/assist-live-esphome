@@ -13,13 +13,15 @@ No transport selection or hardware performance result is available.
 Its package, sound URLs, and `voice_kit` source use the same pins as the compile fixture.
 It does not replace native audio, wake words, timers, or the media player.
 
-The first ESPHome loop call starts the probe one time through `esphome.on_loop`.
+The ESPHome loop starts the probe through `esphome.on_loop`.
 The probe does not add to or change the stock `esphome.on_boot` automation.
 Its worker runs at FreeRTOS `priority` 0 on core 0, below the `priority` 1 ESPHome loop on core 1.
 Only a device test can measure its effect on native functions.
 
 Source: ESPHome `2026.10.0`, `esphome/components/esp32/core.cpp:24-28,41-45`.
-The static start guard prevents one more worker after the first loop call.
+The static start guard prevents one more worker after task creation gives `pdPASS`.
+If task creation is not satisfactory, the probe logs an error and retries on the next loop call.
+It tries a maximum of three times.
 Stock `on_boot` keeps `priority: 375` and its initial sequence of steps.
 The probe start does not wait for the stock `delay: 1s` and `delay: 10min`.
 
@@ -49,7 +51,25 @@ Each event has this canonical ASCII byte order, without a newline:
 version|device_id|boot_id|seq|t_device_ms|stage|event_data|tag
 ```
 
-`version` is `1`. The device identifier is `voice-pe-probe`.
+`version` is `1`. The device identifier comes from `esphome::App.get_name().c_str()`.
+ESPHome `2026.10.0` gives `Application::get_name()` in `esphome/core/application.h:150`.
+
+The probe configuration sets the node name to `assist-live-probe`.
+Stock Voice PE sets `name_add_mac_suffix: true` in `home-assistant-voice.yaml:40`.
+The runtime name is `assist-live-probe-<six MAC hex characters>`.
+ESPHome adds the hardware-address suffix in `esphome/core/application.h:72-88`.
+
+Before the reader stores an event, it replaces the full device identifier with a trial identifier.
+The trial identifier has `device-` and 32 hexadecimal characters from HMAC-SHA256.
+Each trial uses a random 32-byte salt as the HMAC key.
+The identifier stays the same in that trial, but a different trial uses a different salt.
+
+Only the external scratch directory keeps the salt, in `q1-<run_id>.salt` with mode `0600`.
+The report and its `.events.jsonl` file contain only the trial identifier, not the hardware-address suffix or salt.
+Only packet logs in external scratch storage can contain the raw identifier. These logs must not be in a repository.
+The decoded event file does not keep the signed packet.
+The constant `voice-pe-probe` device-origin marker is not the device identifier.
+
 The boot identifier has 16 lowercase hexadecimal characters.
 Use unsigned decimal integers for `seq` and `t_device_ms`.
 
@@ -75,7 +95,7 @@ The external `assist_live_device_token` is the key. The token itself is not an e
 The trial reader checks the tag, run, transport, device fields, and sequence range.
 It refuses duplicate measurement boot/sequence pairs.
 
-The trial reader rejects a boot identifier or firmware revision change during a trial.
+The trial reader rejects a device identifier, boot identifier, or firmware revision change during a trial.
 One trial must contain measurements from one boot of one firmware revision.
 This measurement rule is not the production server's event protocol rule.
 
@@ -126,16 +146,17 @@ Use an external build root:
 ```sh
 RUNROOT="<external scratch directory>"
 DEVICE_SECRETS="<external secrets file>"
-uv run python tools/probe_device.py stage \
+uv run --locked python tools/probe_device.py stage \
   --config tests/probes/transport.yaml --secrets "$DEVICE_SECRETS" \
   --output "$RUNROOT/q1-config"
 export ESPHOME_DATA_DIR="$RUNROOT/data"
 export ESPHOME_BUILD_PATH="$RUNROOT/build"
 export ESPHOME_DEFAULT_COMPILE_PROCESS_LIMIT=2
-uv run esphome config "$RUNROOT/q1-config/transport.yaml" >"$RUNROOT/config.log" 2>&1
-uv run esphome compile "$RUNROOT/q1-config/transport.yaml" >"$RUNROOT/compile.log" 2>&1
-uv run python tools/check_release.py \
-  --config-log "$RUNROOT/config.log" --compile-log "$RUNROOT/compile.log"
+uv run --locked esphome config "$RUNROOT/q1-config/transport.yaml" >"$RUNROOT/config.log" 2>&1
+uv run --locked esphome compile "$RUNROOT/q1-config/transport.yaml" >"$RUNROOT/compile.log" 2>&1
+uv run --locked python tools/check_release.py \
+  --config-log "$RUNROOT/config.log" --compile-log "$RUNROOT/compile.log" \
+  --build-root "$RUNROOT/build/assist-live-probe"
 ```
 
 The compile-only secrets in this check are obviously fake.
@@ -171,7 +192,11 @@ CMake Warning at ESP-IDF 5.5.6 tools/cmake/project.cmake:765 (message):
 The first notice has no message body.
 The two logs also show the same legacy stack-memory key mapping below.
 The same notices occur with the stock configuration, without the probe settings.
-The warning checker does not check CMake notices.
+
+The warning checker compares CMake notices with a baseline.
+The baseline includes the component, source path, line, message, and ESP-IDF version from the build's `dependencies.lock`.
+Each other CMake warning stops the check.
+The compile check also compares the compiler baseline versions with the build's `dependencies.lock`.
 The incremental probe compile gave exit code 0, with no CMake notices or compiler warnings.
 
 ## Build configuration
@@ -199,7 +224,7 @@ The probe does not set these keys.
 
 The WebSocket sender explicitly sets the FIN bit with the text opcode.
 The IDF `esp_transport_ws_send_raw` function does not add FIN.
-Source: `transport_ws.c:98-101,372-385,440-449` in the API source below.
+Source: `transport_ws.c:98-101,376-389,444-452` in ESP-IDF `5.5.6`, in the sources below.
 
 ## Resolved configuration contract
 
@@ -264,7 +289,7 @@ PASS config warnings: new_warnings=0
 INF no leaks found
 ```
 
-The current firmware revision is `sha256-c483c3d7bd2cb1e0fd2e40ce4f79b20cb7ca8791ade325ad9d200184a2087463`.
+The initial firmware revision was `sha256-c483c3d7bd2cb1e0fd2e40ce4f79b20cb7ca8791ade325ad9d200184a2087463`.
 The unmodified tests and complete repository gate gave:
 
 ```text
@@ -292,28 +317,38 @@ Device trial: not run (no test device at this time).
 
 The UDP receiver and WebSocket endpoint use port `8765`. The WebSocket path is `/q1`.
 The armed receiver runs for 120 seconds by default.
+The operator must give the host's LAN address with `--bind`.
+There is no default `--bind` address for an armed run.
+
 It writes `q1-<run_id>.jsonl` adjacent to the external secrets file, with mode `0600`.
-A new raw file is necessary. Keep raw data external to the repository.
+A new raw file is necessary. Keep raw data and the salt external to the repository.
+The scratch directory must not be in a Git repository.
 
 The command below is a future step, not a result:
 
 ```sh
-uv run python tools/probe_device.py --arm --events 1000 --reconnects 10 \
-  --secrets "$DEVICE_SECRETS" --report docs/research/q1-device-probe.md
+uv run --locked python tools/probe_device.py --arm --events 1000 --reconnects 10 \
+  --secrets "$DEVICE_SECRETS" --bind "$RECEIVER_LAN_ADDRESS" \
+  --report docs/research/q1-device-trial.md
 ```
 
-That command replaces this report. Keep a copy of the procedure before a device run.
-Use `--bind` to select the isolated receiver interface and `--seconds` to change the bounded capture period.
+That command writes a different trial result file. The receiver refuses this hand-written research record as an output path.
+It also writes `docs/research/q1-device-trial.events.jsonl` with decoded measurement data and the same trial identifier.
+
+Use `--seconds` to change the bounded capture period.
 Use `--sample`, not `--arm`, to read recorded JSONL data without network access.
+Use the external packet log, not `.events.jsonl`, with `--sample`.
 Sample reports state that the device trial did not run.
 
 ## Sources
 
-Access date: 2026-10-24 (UTC).
+Access date: 2026-10-25 (UTC).
 
-- Stock Voice PE package and board configuration: <https://github.com/esphome/home-assistant-voice-pe/blob/2644f4c794271d735d182ca7ebf899ed46164f4e/home-assistant-voice.yaml>
-- ESP-IDF WebSocket transport, with client masking, upgrade checks, and explicit FIN opcode: <https://github.com/espressif/esp-idf/blob/v5.5.2/components/tcp_transport/transport_ws.c>
-- ESP-IDF transport API: <https://github.com/espressif/esp-idf/blob/v5.5.2/components/tcp_transport/include/esp_transport_ws.h>
+- Stock Voice PE package and board configuration: <https://github.com/esphome/home-assistant-voice-pe/blob/2644f4c794271d735d182ca7ebf899ed46164f4e/home-assistant-voice.yaml#L40>
+- ESP-IDF WebSocket transport, with client masking, upgrade checks, and explicit FIN opcode: <https://github.com/espressif/esp-idf/blob/v5.5.6/components/tcp_transport/transport_ws.c#L444-L452>
+- ESP-IDF transport API: <https://github.com/espressif/esp-idf/blob/v5.5.6/components/tcp_transport/include/esp_transport_ws.h#L42-L63>
+- ESPHome node name: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/application.h#L150>.
+- ESPHome hardware-address suffix: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/application.h#L72-L88>.
 - ESPHome built-in component exclusions and configuration: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/esp32/__init__.py> (`DEFAULT_EXCLUDED_IDF_COMPONENTS:226-285`, explicit inclusion at lines 3148-3150).
 - ESPHome loop task `priority` and core: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/esp32/core.cpp> (lines 24-28 and 41-45).
 - ESPHome package merge: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/config_helpers.py> (lines 77-98).

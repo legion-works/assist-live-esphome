@@ -50,7 +50,9 @@ def read_secrets(path: Path) -> dict[str, str]:
     if not isinstance(values, dict) or any(
         not isinstance(values.get(k), str) or not values[k].strip() for k in REQUIRED
     ):
-        raise ValueError("external secrets require all five non-empty string keys")
+        raise ValueError(
+            f"external secrets require all {len(REQUIRED)} non-empty string keys"
+        )
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", values["assist_live_device_token"]):
         raise ValueError("device token must have 32 to 128 ASCII token characters")
     if not re.fullmatch(r"[0-9a-f]{32}", values["probe_run_id"]):
@@ -86,6 +88,8 @@ def valid_evidence(event: dict) -> bool:
     return (
         event.get("sender") == "device"
         and event.get("device_origin") == "voice-pe-probe"
+        and isinstance(event.get("device_id"), str)
+        and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", event["device_id"]) is not None
         and isinstance(event.get("firmware_revision"), str)
         and re.fullmatch(r"sha256-[0-9a-f]{64}", event["firmware_revision"]) is not None
         and isinstance(event.get("boot_id"), str)
@@ -108,6 +112,7 @@ def decode_event(packet: bytes, token: str, run_id: str) -> dict:
         sender, origin, revision, run, transport, trial, elapsed = data.split(",")
         event: dict[str, Any] = dict(
             sender=sender,
+            device_id=device,
             device_origin=origin,
             firmware_revision=revision,
             boot_id=boot,
@@ -120,7 +125,6 @@ def decode_event(packet: bytes, token: str, run_id: str) -> dict:
         )
         if (
             version != "1"
-            or device != "voice-pe-probe"
             or run != run_id
             or transport not in {"udp", "websocket"}
             or stage_name not in {"ready", "probe_event", "reconnect"}
@@ -134,19 +138,54 @@ def decode_event(packet: bytes, token: str, run_id: str) -> dict:
         raise ValueError("invalid authenticated device event") from None
 
 
+def load_trial_salt(directory: Path, run_id: str) -> bytes:
+    directory = directory.resolve()
+    if directory.is_relative_to(ROOT) or any(
+        (parent / ".git").exists() for parent in (directory, *directory.parents)
+    ):
+        raise ValueError("trial salt must stay outside any repository")
+    if re.fullmatch(r"[0-9a-f]{32}", run_id) is None:
+        raise ValueError("invalid trial salt run identifier")
+    path = directory / f"q1-{run_id}.salt"
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
+            raise ValueError("trial salt must be a private regular file") from None
+        salt = path.read_bytes()
+    else:
+        salt = os.urandom(32)
+        with os.fdopen(descriptor, "wb") as target:
+            target.write(salt)
+    if len(salt) != 32:
+        raise ValueError("trial salt must contain 32 random bytes")
+    return salt
+
+
 class EvidenceReader:
-    def __init__(self, token: str, run_id: str):
+    def __init__(self, token: str, run_id: str, *, salt: bytes | None = None):
         self.token = token
         self.run_id = run_id
+        self.salt = os.urandom(32) if salt is None else salt
         self.events: list[dict] = []
         self.seen: set[tuple[str, int]] = set()
         self.rejected = 0
-        self.identity: tuple[str, str] | None = None
+        self.identity: tuple[str, str, str] | None = None
 
     def accept(self, packet: bytes, transport: str, arrival_ms: float) -> bool:
         try:
             event = decode_event(packet, self.token, self.run_id)
-            identity = (event["boot_id"], event["firmware_revision"])
+            event["device_id"] = (
+                "device-"
+                + hmac.new(
+                    self.salt, event["device_id"].encode("ascii"), hashlib.sha256
+                ).hexdigest()[:32]
+            )
+            identity = (
+                event["boot_id"],
+                event["firmware_revision"],
+                event["device_id"],
+            )
             key = (event["boot_id"], event["seq"])
             if event["transport"] != transport or key in self.seen:
                 raise ValueError("replay or incorrect transport")
@@ -207,6 +246,8 @@ def write_report(
     *,
     recorded: bool = False,
 ) -> None:
+    if path.resolve() == (ROOT / "docs/research/q1-device-probe.md").resolve():
+        raise ValueError("trial report must not replace the research record")
     state = (
         "Recorded sample. Device trial: not run."
         if recorded
@@ -242,7 +283,16 @@ def write_report(
         ]
     )
     if reader.identity:
-        lines.extend([f"Firmware revision: `{reader.identity[1]}`.", ""])
+        lines.extend(
+            [
+                f"Firmware revision: `{reader.identity[1]}`.",
+                f"Device ID: `{reader.identity[2]}`.",
+                "",
+            ]
+        )
+    path.with_suffix(".events.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in reader.events)
+    )
     path.write_text("\n".join(lines))
 
 
@@ -364,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reconnects", type=int, choices=[10], default=10)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--sample", type=Path)
-    parser.add_argument("--bind", default="0.0.0.0")
+    parser.add_argument("--bind")
     parser.add_argument("--seconds", type=float, default=120)
     args = parser.parse_args(argv)
     if args.secrets is None:
@@ -380,11 +430,22 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("a device run requires --arm and --report")
         if args.sample is not None and args.arm:
             parser.error("recorded samples cannot arm a device")
+        if args.arm and args.bind is None:
+            parser.error("--arm requires --bind with the host LAN address")
+        if (
+            args.report.resolve()
+            == (ROOT / "docs/research/q1-device-probe.md").resolve()
+        ):
+            parser.error("trial report must not replace the research record")
         if not 1 <= args.seconds <= 600:
             parser.error("--seconds must be 1 to 600")
         secrets = read_secrets(args.secrets)
         reader = EvidenceReader(
-            secrets["assist_live_device_token"], secrets["probe_run_id"]
+            secrets["assist_live_device_token"],
+            secrets["probe_run_id"],
+            salt=load_trial_salt(
+                args.secrets.resolve().parent, secrets["probe_run_id"]
+            ),
         )
         if args.sample:
             for line in args.sample.read_text().splitlines():
@@ -415,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except (OSError, ValueError, yaml.YAMLError) as error:
-        print(f"FAIL probe: {type(error).__name__}")
+        print(f"FAIL probe: {type(error).__name__}: {error}")
         return 1
 
 

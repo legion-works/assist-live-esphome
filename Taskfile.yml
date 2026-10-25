@@ -18,40 +18,46 @@ tasks:
       - task: lint
       - task: typecheck
       - task: unit
+      - task: unit-floor
       - task: bootstrap
       - task: source-only
       - task: config
       - task: compile
+      - task: compile-probe
       - task: secrets
 
   lint:
     cmds:
-      - uv run ruff format --check .
-      - uv run ruff check .
+      - uv run --locked ruff format --check .
+      - uv run --locked ruff check .
       - actionlint
 
   typecheck:
     cmds:
-      - uv run mypy
+      - uv run --locked mypy
 
   unit:
     cmds:
-      - uv run pytest -q
+      - uv run --locked pytest -q
+
+  unit-floor:
+    cmds:
+      - UV_PROJECT_ENVIRONMENT=.venv-floor uv run --locked --python 3.12 pytest tests/ -q
 
   bootstrap:
     cmds:
-      - uv run python tools/check_bootstrap.py
+      - uv run --locked python tools/check_bootstrap.py
 
   source-only:
     cmds:
-      - uv run python tools/check_release.py --source-only
+      - uv run --locked python tools/check_release.py --source-only
 
   config:
     cmds:
       - mkdir -p "{{.WORK_ROOT}}"
       - |
-        if uv run esphome config tests/fixtures/voice-pe.yaml >"{{.WORK_ROOT}}/config.log" 2>&1; then
-          uv run python tools/check_release.py --config-log "{{.WORK_ROOT}}/config.log"
+        if uv run --locked esphome config tests/fixtures/voice-pe.yaml >"{{.WORK_ROOT}}/config.log" 2>&1; then
+          uv run --locked python tools/check_release.py --config-log "{{.WORK_ROOT}}/config.log"
         else
           tail -80 "{{.WORK_ROOT}}/config.log"
           exit 1
@@ -61,7 +67,7 @@ tasks:
     cmds:
       - mkdir -p "{{.WORK_ROOT}}"
       - |
-        if uv run esphome compile tests/fixtures/voice-pe.yaml >"{{.WORK_ROOT}}/compile.log" 2>&1; then
+        if uv run --locked esphome compile tests/fixtures/voice-pe.yaml >"{{.WORK_ROOT}}/compile.log" 2>&1; then
           tail -20 "{{.WORK_ROOT}}/compile.log"
         else
           tail -80 "{{.WORK_ROOT}}/compile.log"
@@ -69,8 +75,30 @@ tasks:
         fi
       - test -f "{{.WORK_ROOT}}/build/assist-live-compile-test/src/main.cpp"
       - gitleaks dir "{{.WORK_ROOT}}/build/assist-live-compile-test/src" --config .gitleaks.toml --redact --exit-code 1
-      - uv run python tools/check_release.py --compile-log "{{.WORK_ROOT}}/compile.log"
+      - uv run --locked python tools/check_release.py --compile-log "{{.WORK_ROOT}}/compile.log" --build-root "{{.WORK_ROOT}}/build/assist-live-compile-test"
+
+  compile-probe:
+    cmds:
+      - mkdir -p "{{.WORK_ROOT}}"
+      - |
+        set -eu
+        scratch=$(mktemp -d "${RUNNER_TEMP:-{{.WORK_ROOT}}}/compile-only-probe.XXXXXX")
+        chmod 700 "$scratch"
+        printf '%s\n' 'wifi_ssid: compile-only-no-network' 'wifi_password: compile-only-not-a-password' 'assist_live_device_token: compile-only-not-a-real-token-00000000' 'assist_live_server: 192.0.2.1' 'probe_run_id: 0123456789abcdef0123456789abcdef' > "$scratch/external.yaml"
+        chmod 600 "$scratch/external.yaml"
+        uv run --locked python tools/probe_device.py stage --config tests/probes/transport.yaml --secrets "$scratch/external.yaml" --output "$scratch/staged"
+        export ESPHOME_BUILD_PATH="{{.WORK_ROOT}}/probe-build"
+        if uv run --locked esphome compile "$scratch/staged/transport.yaml" >"{{.WORK_ROOT}}/probe-compile.log" 2>&1; then
+          tail -20 "{{.WORK_ROOT}}/probe-compile.log"
+        else
+          tail -80 "{{.WORK_ROOT}}/probe-compile.log"
+          exit 1
+        fi
+        test -f "{{.WORK_ROOT}}/probe-build/assist-live-probe/src/main.cpp"
+        gitleaks dir "{{.WORK_ROOT}}/probe-build/assist-live-probe/src" --config .gitleaks.toml --redact --exit-code 1
+        uv run --locked python tools/check_release.py --compile-log "{{.WORK_ROOT}}/probe-compile.log" --build-root "{{.WORK_ROOT}}/probe-build/assist-live-probe"
 
   secrets:
     cmds:
       - gitleaks dir . --redact --exit-code 1
+      - gitleaks git . --redact --exit-code 1

@@ -106,3 +106,79 @@ def test_fixture_secret_change_stops_scan(tmp_path: Path) -> None:
             check=False,
         )
         assert result.returncode == int(changed), result.stdout + result.stderr
+
+
+def test_probe_compile_and_floor_tests_are_required():
+    tasks = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]
+    checks = tasks["check"]["cmds"]
+    assert {"task": "compile-probe"} in checks
+    assert {"task": "unit-floor"} in checks
+    probe = "\n".join(tasks["compile-probe"]["cmds"])
+    for required in (
+        "probe_device.py stage",
+        "transport.yaml",
+        "compile-only",
+        "check_release.py --compile-log",
+        "--build-root",
+        "gitleaks dir",
+        "mktemp -d",
+    ):
+        assert required in probe
+    assert "RUNNER_TEMP" in probe
+    assert "esphome compile" in probe
+    floor = "\n".join(tasks["unit-floor"]["cmds"])
+    assert "uv run --locked --python 3.12 pytest tests/ -q" in floor
+    assert "UV_PROJECT_ENVIRONMENT=.venv-floor" in floor
+    assert ".venv-floor/" in (ROOT / ".gitignore").read_text().splitlines()
+    for job in load_workflow("ci.yml")["jobs"].values():
+        if "steps" in job:
+            runs = "\n".join(step.get("run", "") for step in job["steps"])
+            if "task config compile" in runs:
+                assert "compile-probe" in runs
+    assert any("gitleaks git" in cmd for cmd in tasks["secrets"]["cmds"])
+    for task in tasks.values():
+        for cmd in task["cmds"]:
+            if isinstance(cmd, str):
+                assert not re.search(r"uv run (?!\-\-locked)", cmd)
+
+
+def test_history_scans_require_complete_checkout():
+    tasks = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]
+    history_tasks = {
+        name
+        for name, task in tasks.items()
+        if any(isinstance(cmd, str) and "gitleaks git" in cmd for cmd in task["cmds"])
+    }
+    while True:
+        expanded = history_tasks | {
+            name
+            for name, task in tasks.items()
+            if any(
+                isinstance(cmd, dict) and cmd.get("task") in history_tasks
+                for cmd in task["cmds"]
+            )
+        }
+        if expanded == history_tasks:
+            break
+        history_tasks = expanded
+    checked = set()
+    for name, job in load_workflow("ci.yml")["jobs"].items():
+        runs = "\n".join(step.get("run", "") for step in job["steps"])
+        invoked = {
+            word
+            for command in re.findall(r"\btask\s+([^\n;&|]+)", runs)
+            for word in command.split()
+        }
+        if "gitleaks git" not in runs and not invoked & history_tasks:
+            continue
+        checkouts = [
+            step
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
+        ]
+        assert checkouts, f"{name}: history scan needs a checkout"
+        assert all(
+            step.get("with", {}).get("fetch-depth") == "0" for step in checkouts
+        ), name
+        checked.add(name)
+    assert {"checks", "compile"} <= checked
