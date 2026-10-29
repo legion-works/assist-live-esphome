@@ -6,9 +6,9 @@ ESPHome is the external build framework. This repository does not copy its sourc
 Its Python code and other non-runtime parts use the MIT license.
 Its C++ runtime uses the GNU General Public License version 3.
 
-Source: <https://github.com/esphome/esphome/tree/2026.10.0>
+Source: <https://github.com/esphome/esphome/tree/704551a6c93c29a311802f7ee97d67a9e9bce718>
 
-License: <https://github.com/esphome/esphome/blob/2026.10.0/LICENSE>
+License: <https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/LICENSE>
 
 ## Home Assistant Voice PE package
 

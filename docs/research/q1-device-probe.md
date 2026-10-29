@@ -1,6 +1,6 @@
 # Device transport probe
 
-Date: 2026-10-24 (UTC).
+Record date: 2026-10-24 (UTC). For current behavior, see [device timing events](../protocol.md).
 
 Device trial: not run (no test device at this time).
 
@@ -345,14 +345,14 @@ Sample reports state that the device trial did not run.
 Access date: 2026-10-25 (UTC).
 
 - Stock Voice PE package and board configuration: <https://github.com/esphome/home-assistant-voice-pe/blob/2644f4c794271d735d182ca7ebf899ed46164f4e/home-assistant-voice.yaml#L40>
-- ESP-IDF WebSocket transport, with client masking, upgrade checks, and explicit FIN opcode: <https://github.com/espressif/esp-idf/blob/v5.5.6/components/tcp_transport/transport_ws.c#L444-L452>
-- ESP-IDF transport API: <https://github.com/espressif/esp-idf/blob/v5.5.6/components/tcp_transport/include/esp_transport_ws.h#L42-L63>
-- ESPHome node name: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/application.h#L150>.
-- ESPHome hardware-address suffix: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/application.h#L72-L88>.
-- ESPHome built-in component exclusions and configuration: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/esp32/__init__.py> (`DEFAULT_EXCLUDED_IDF_COMPONENTS:226-285`, explicit inclusion at lines 3148-3150).
-- ESPHome loop task `priority` and core: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/esp32/core.cpp> (lines 24-28 and 41-45).
-- ESPHome package merge: <https://github.com/esphome/esphome/blob/2026.10.0/esphome/config_helpers.py> (lines 77-98).
-- ESP-IDF `5.5.6` Kconfig sources: <https://github.com/espressif/esp-idf/blob/v5.5.6/components/tcp_transport/Kconfig> and <https://github.com/espressif/esp-idf/blob/v5.5.6/components/lwip/Kconfig>.
-- ESP-IDF key mapping: <https://github.com/espressif/esp-idf/blob/v5.5.6/components/freertos/sdkconfig.rename>.
+- ESP-IDF WebSocket transport, with client masking, upgrade checks, and explicit FIN opcode: <https://github.com/espressif/esp-idf/blob/880a203ae603d08a94d06aa01e0d6761958e5e9e/components/tcp_transport/transport_ws.c#L444-L452>
+- ESP-IDF transport API: <https://github.com/espressif/esp-idf/blob/880a203ae603d08a94d06aa01e0d6761958e5e9e/components/tcp_transport/include/esp_transport_ws.h#L42-L63>
+- ESPHome node name: <https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/core/application.h#L150>.
+- ESPHome hardware-address suffix: <https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/core/application.h#L72-L88>.
+- ESPHome built-in component exclusions and configuration: <https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/components/esp32/__init__.py> (`DEFAULT_EXCLUDED_IDF_COMPONENTS:226-285`, explicit inclusion at lines 3148-3150).
+- ESPHome loop task `priority` and core: <https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/components/esp32/core.cpp> (lines 24-28 and 41-45).
+- ESPHome package merge: <https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/config_helpers.py> (lines 77-98).
+- ESP-IDF `5.5.6` Kconfig sources: <https://github.com/espressif/esp-idf/blob/880a203ae603d08a94d06aa01e0d6761958e5e9e/components/tcp_transport/Kconfig> and <https://github.com/espressif/esp-idf/blob/880a203ae603d08a94d06aa01e0d6761958e5e9e/components/lwip/Kconfig>.
+- ESP-IDF key mapping: <https://github.com/espressif/esp-idf/blob/880a203ae603d08a94d06aa01e0d6761958e5e9e/components/freertos/sdkconfig.rename>.
 
 The compile gate checks the installed ESP-IDF version. The API source above is not a toolchain pin.

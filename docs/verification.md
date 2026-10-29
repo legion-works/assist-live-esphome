@@ -1621,3 +1621,29 @@ The different literal self-check reported:
 ```text
 publishable_files=72 denylist_matches=0 home_path_matches=0 private_ipv4_matches=0
 ```
+
+## Public documentation checks
+
+Record date: 2026-10-29 (UTC).
+
+The `README.md`, `ARCHITECTURE.md`, and `SECURITY.md` files give the authenticated timing sender's behavior, not the earlier placeholder.
+The example uses `assist_live_device`, `assist_live_hmac_key`, and `assist_live_server` secrets.
+The compile fixture contains six fake values.
+The dated probe record points to the current device timing document without changes to its historical findings.
+External code citations use commit pins for ESPHome `2026.10.0`, ESP-IDF `5.5.6`, and the server protocol.
+
+The source boundary, runtime behavior, and tests do not change with these documentation corrections.
+No new code guard makes a mutation test necessary.
+Device trial not run: no test device at this time.
+
+Gate commands from the repository root use external work and denylist paths:
+
+```sh
+ESPHOME_WORK_DIR="$CHECK_TMP" PRIVATE_DENYLIST="$PRIVATE_DENYLIST" task check
+python3 "$STE_CHECKER" README.md ARCHITECTURE.md SECURITY.md THIRD_PARTY_NOTICES.md docs/protocol.md docs/research/q1-device-probe.md docs/verification.md
+python3 "$PUBLIC_TREE_CHECKER" --root . --private-denylist "$PRIVATE_DENYLIST"
+git diff --check
+```
+
+The full task includes the Python `3.12` test run and the UDP, WebSocket, and probe compiles.
+The different public-tree command is necessary when the sibling checker is not available to the task.

@@ -2,8 +2,9 @@
 
 An experimental ESPHome component for assist-live. This project has no release.
 
-The component is a placeholder. It adds no network connection, timing events, or voice hooks.
-It only calls `register_component` and prints a configuration message.
+The component sends authenticated device timing events through UDP or WebSocket.
+It reports wake detection, a microphone-start proxy, and playback-state proxies.
+See [device timing events](docs/protocol.md) for credentials, configuration, and signal limits.
 The example extends the stock Home Assistant Voice Preview Edition (Voice PE) package.
 The stock package keeps control of voice, wake words, timers, and the media player.
 
@@ -43,7 +44,10 @@ It uses the local `components/` directory because this project has no release.
 Keep actual flash credentials in an external secrets directory.
 Copy the example to that directory. Change its local component path to your source checkout.
 Put the actual `secrets.yaml` adjacent to that copy, not in this repository.
-The `assist_live_device_token` and `assist_live_server` substitutions have no runtime consumer at this step.
+
+Set `assist_live_device`, `assist_live_hmac_key`, and `assist_live_server` in the external secrets file.
+The example uses them as the anonymous device identifier, 32-byte hexadecimal HMAC key, and server address.
+It selects UDP timing events. No device trial or transport selection result is available.
 
 ## Documentation
 

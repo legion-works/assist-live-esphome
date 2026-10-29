@@ -1,7 +1,10 @@
 # Vulnerability reports
 
 This project is experimental and has no release.
-The placeholder component does not send or receive network data.
+The component sends HMAC-authenticated timing events through UDP or WebSocket.
+The two transports do not encrypt the events. Use an isolated network.
+The WebSocket sender also receives transport control frames.
+
 The stock Voice PE package has its own network functions.
 The compile fixture is not safe to flash.
 
@@ -16,4 +19,5 @@ No response-time guarantee applies at this step.
 
 Keep actual secrets in an external directory.
 Keep configuration output and build logs private because they can contain configuration values.
-The four values in `tests/fixtures/secrets.yaml` are fake and apply only to the compile check.
+The six values in `tests/fixtures/secrets.yaml` are fake and apply only to the compile check.
+Build output contains the device HMAC key and Wi-Fi password. Do not publish C++ build output or firmware images.

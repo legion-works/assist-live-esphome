@@ -4,7 +4,7 @@ The project is experimental and has no release.
 
 ## Server contract
 
-The [server protocol](https://github.com/legion-works/assist-live-server/blob/main/docs/protocol.md) is the authority for encoding, authentication, and transport routes.
+The [server protocol](https://github.com/legion-works/assist-live-server/blob/a888c3b5cc34e14f3ee9efb0bf76156df908de35/docs/protocol.md) is the authority for encoding, authentication, and transport routes.
 This document gives firmware configuration and signal limits, not a second protocol specification.
 The firmware and server use the same `device-vectors.json` bytes.
 Their SHA-256 is:
@@ -169,14 +169,14 @@ Compile and native simulation results do not prove unchanged native-function lat
 
 Access date: 2026-10-25 (UTC).
 
-- [ESPHome 2026.10.0 command-audio streaming](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.cpp#L380-L403), with the public start callback at line 785.
-- [ESPHome 2026.10.0 voice-assistant state](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.h#L329), with public callbacks at lines 198 to 218.
-- [ESPHome 2026.10.0 secret output](https://github.com/esphome/esphome/blob/2026.10.0/esphome/yaml_util.py#L1335-L1341): `represent_secret` sends the secret name, not its value.
-- [ESPHome 2026.10.0 sensitive-value output](https://github.com/esphome/esphome/blob/2026.10.0/esphome/yaml_util.py#L1364-L1375): `represent_sensitive` can write value bytes between terminal control codes.
-- [ESP-IDF 5.5.6 hardware RNG](https://github.com/espressif/esp-idf/blob/v5.5.6/components/esp_hw_support/include/esp_random.h#L35-L43): `esp_fill_random` fills a buffer through the hardware RNG.
-- [ESPHome 2026.10.0 lifecycle hooks](https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/component.h#L177-L191): `on_shutdown()` and `teardown()` are virtual lifecycle methods.
-- [ESPHome 2026.10.0 restart paths](https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/application.cpp#L293-L315): `safe_reboot()` waits for teardown. `reboot()` does not.
-- [ESP-IDF 5.5.6 WebSocket receive path](https://github.com/espressif/esp-idf/blob/v5.5.6/components/tcp_transport/transport_ws.c#L690-L748): the caller can receive control frames and select the read timeout.
+- [ESPHome 2026.10.0 command-audio streaming](https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/components/voice_assistant/voice_assistant.cpp#L380-L403), with the public start callback at line 785.
+- [ESPHome 2026.10.0 voice-assistant state](https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/components/voice_assistant/voice_assistant.h#L329), with public callbacks at lines 198 to 218.
+- [ESPHome 2026.10.0 secret output](https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/yaml_util.py#L1335-L1341): `represent_secret` sends the secret name, not its value.
+- [ESPHome 2026.10.0 sensitive-value output](https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/yaml_util.py#L1364-L1375): `represent_sensitive` can write value bytes between terminal control codes.
+- [ESP-IDF 5.5.6 hardware RNG](https://github.com/espressif/esp-idf/blob/880a203ae603d08a94d06aa01e0d6761958e5e9e/components/esp_hw_support/include/esp_random.h#L35-L43): `esp_fill_random` fills a buffer through the hardware RNG.
+- [ESPHome 2026.10.0 lifecycle hooks](https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/core/component.h#L177-L191): `on_shutdown()` and `teardown()` are virtual lifecycle methods.
+- [ESPHome 2026.10.0 restart paths](https://github.com/esphome/esphome/blob/704551a6c93c29a311802f7ee97d67a9e9bce718/esphome/core/application.cpp#L293-L315): `safe_reboot()` waits for teardown. `reboot()` does not.
+- [ESP-IDF 5.5.6 WebSocket receive path](https://github.com/espressif/esp-idf/blob/880a203ae603d08a94d06aa01e0d6761958e5e9e/components/tcp_transport/transport_ws.c#L690-L748): the caller can receive control frames and select the read timeout.
 
 The RNG source at lines 20 to 22 specifies enabled Wi-Fi or Bluetooth for values with physical entropy.
 The component starts after Wi-Fi setup. The stock Voice PE package enables the radio.
