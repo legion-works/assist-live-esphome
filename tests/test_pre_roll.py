@@ -1,0 +1,268 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def component_config():
+    return {
+        "id": "telemetry",
+        "device": "satellite-compile-test",
+        "hmac_key": "00" * 32,
+        "server": "192.0.2.1",
+        "transport": "udp",
+        "media_player_id": "external_media_player",
+        "pre_roll": {
+            "id": "history_mic",
+            "microphone": "i2s_mics",
+            "wake_sound": "wake_sound",
+        },
+    }
+
+
+def validate(config):
+    from esphome.const import KEY_CORE, KEY_TARGET_FRAMEWORK, KEY_TARGET_PLATFORM
+    from esphome.core import CORE
+
+    from components.assist_live import CONFIG_SCHEMA
+
+    CORE.data[KEY_CORE] = {
+        KEY_TARGET_PLATFORM: "esp32",
+        KEY_TARGET_FRAMEWORK: "esp-idf",
+    }
+    try:
+        return CONFIG_SCHEMA(config)
+    finally:
+        CORE.reset()
+
+
+def test_optional_pre_roll_accepts_physical_stereo_source_and_provisional_length():
+    result = validate(component_config())
+    assert result["pre_roll"]["length_ms"] == 250
+
+
+@pytest.mark.parametrize("length", [0, -1, 1001])
+def test_pre_roll_refuses_length_outside_device_limit(length):
+    from esphome import config_validation as cv
+
+    config = component_config()
+    config["pre_roll"]["length_ms"] = length
+    with pytest.raises(cv.Invalid, match="length_ms"):
+        validate(config)
+
+
+@pytest.mark.parametrize("length", [1, 1000])
+def test_pre_roll_accepts_length_boundaries(length):
+    config = component_config()
+    config["pre_roll"]["length_ms"] = length
+    assert validate(config)["pre_roll"]["length_ms"] == length
+
+
+def test_pre_roll_requires_wake_sound_reference():
+    from esphome import config_validation as cv
+
+    config = component_config()
+    del config["pre_roll"]["wake_sound"]
+    with pytest.raises(cv.Invalid, match="wake_sound"):
+        validate(config)
+
+
+@pytest.mark.parametrize("change", ["third", "channel", "id", "gain"])
+def test_final_validation_refuses_stock_source_drift_without_partial_rewrite(change):
+    import copy
+
+    from esphome import config_validation as cv
+    from esphome import final_validate as fv
+    from esphome.config import Config
+
+    from components.assist_live import validate_pre_roll
+
+    config = component_config()
+    sources = [
+        {
+            "microphone": "i2s_mics",
+            "channels": [channel],
+            "gain_factor": 1,
+            "bits_per_sample": 16,
+        }
+        for channel in (0, 1)
+    ]
+    if change == "third":
+        sources.append(copy.deepcopy(sources[0]))
+    elif change == "channel":
+        sources[1]["channels"] = [0]
+    elif change == "id":
+        sources[1]["microphone"] = "other_mic"
+    else:
+        sources[1]["gain_factor"] = 4
+    before = copy.deepcopy(sources)
+    full = Config()
+    full["voice_assistant"] = {"microphone": sources}
+    token = fv.full_config.set(full)
+    try:
+        with pytest.raises(cv.Invalid, match="unchanged stock two-channel VA sources"):
+            validate_pre_roll(config)
+        assert sources == before, "failure must not partially rewire either source"
+    finally:
+        fv.full_config.reset(token)
+
+
+def test_native_pre_roll_history_and_pacing(tmp_path):
+    from tests.event_vectors import COMPONENT, compiler, run
+
+    executable = str(tmp_path / "pre_roll")
+    run(
+        [
+            compiler(),
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            str(COMPONENT),
+            str(ROOT / "tests/native/pre_roll.cpp"),
+            "-o",
+            executable,
+        ]
+    )
+    assert run([executable]) == "PASS pre-roll\n"
+
+
+def resolved_config(path, tmp_path, *, verbose=False):
+    import yaml
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "esphome",
+            *(["-v"] if verbose else []),
+            "config",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={
+            **os.environ,
+            "ESPHOME_BUILD_PATH": str(tmp_path / "build"),
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    class ConfigLoader(yaml.SafeLoader):
+        pass
+
+    def lambda_text(loader: ConfigLoader, node: yaml.Node):
+        assert isinstance(node, yaml.ScalarNode)
+        return loader.construct_scalar(node)
+
+    ConfigLoader.add_constructor("!lambda", lambda_text)
+    return yaml.load(result.stdout, Loader=ConfigLoader)
+
+
+def test_resolved_pre_roll_rewires_only_va_and_preserves_stock_actions(tmp_path):
+    baseline = resolved_config(ROOT / "tests/fixtures/voice-pe.yaml", tmp_path)
+    enabled = resolved_config(ROOT / "tests/fixtures/voice-pe-pre-roll.yaml", tmp_path)
+    assert "pre_roll" not in baseline["assist_live"]
+    assert [
+        source["microphone"] for source in baseline["voice_assistant"]["microphone"]
+    ] == ["i2s_mics", "i2s_mics"]
+    assert (
+        enabled["micro_wake_word"]["microphone"]
+        == baseline["micro_wake_word"]["microphone"]
+    )
+    assert [
+        source["microphone"] for source in enabled["voice_assistant"]["microphone"]
+    ] == ["pre_roll_mic", "pre_roll_mic"]
+    assert [
+        source["channels"] for source in enabled["voice_assistant"]["microphone"]
+    ] == [[0], [1]]
+    for key in ("speaker", "media_player", "script", "select", "light"):
+        assert enabled[key] == baseline[key], key
+    assert enabled["micro_wake_word"]["models"] == baseline["micro_wake_word"]["models"]
+    expected = baseline["voice_assistant"]["microphone"]
+    for source in expected:
+        source["microphone"] = "pre_roll_mic"
+    assert enabled["voice_assistant"]["microphone"] == expected
+
+    removed = 0
+
+    def without_arm(value):
+        nonlocal removed
+        if isinstance(value, list):
+            result = []
+            for item in value:
+                if item == {"lambda": "id(pre_roll_mic).wake_detected();"}:
+                    removed += 1
+                else:
+                    result.append(without_arm(item))
+            return result
+        if isinstance(value, dict):
+            return {key: without_arm(item) for key, item in value.items()}
+        return value
+
+    assert (
+        without_arm(enabled["micro_wake_word"]["on_wake_word_detected"])
+        == baseline["micro_wake_word"]["on_wake_word_detected"]
+    )
+    assert removed == 1
+
+    physical_users = []
+
+    def collect_users(value, path=()):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"microphone.mute", "microphone.unmute"}:
+                    assert item["id"] == "i2s_mics", path
+                    physical_users.append(key)
+                if key == "microphone" and isinstance(item, str):
+                    expected = (
+                        "pre_roll_mic" if path[0] == "voice_assistant" else "i2s_mics"
+                    )
+                    assert item == expected, path
+                collect_users(item, (*path, key))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                collect_users(item, (*path, index))
+
+    collect_users(
+        resolved_config(
+            ROOT / "tests/fixtures/voice-pe-pre-roll.yaml", tmp_path, verbose=True
+        )
+    )
+    assert physical_users.count("microphone.mute") == 1
+    assert physical_users.count("microphone.unmute") == 2
+    assert enabled["micro_wake_word"]["microphone"]["microphone"] == "i2s_mics"
+
+
+def test_pre_roll_probe_resolves_with_external_compile_only_secrets(tmp_path):
+    base = (
+        (ROOT / "tests/fixtures/voice-pe.yaml")
+        .read_text()
+        .replace("../../components", str(ROOT / "components"))
+    )
+    probe = (
+        (ROOT / "tests/probes/pre-roll.yaml")
+        .read_text()
+        .replace("../fixtures/voice-pe.yaml", "base.yaml")
+        .replace("../../examples/pre-roll.yaml", "history.yaml")
+    )
+    (tmp_path / "base.yaml").write_text(base)
+    (tmp_path / "history.yaml").write_text(
+        (ROOT / "examples/pre-roll.yaml").read_text()
+    )
+    (tmp_path / "secrets.yaml").write_bytes(
+        (ROOT / "tests/fixtures/secrets.yaml").read_bytes()
+    )
+    path = tmp_path / "pre-roll.yaml"
+    path.write_text(probe)
+    config = resolved_config(path, tmp_path)
+    assert config["esphome"]["name"] == "assist-live-history"
+    assert [
+        source["microphone"] for source in config["voice_assistant"]["microphone"]
+    ] == ["pre_roll_mic", "pre_roll_mic"]

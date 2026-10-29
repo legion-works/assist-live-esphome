@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Use external secrets. This file does not change the transport probe protocol.
+packages:
+  telemetry: !include ../fixtures/voice-pe.yaml
+  history: !include ../../examples/pre-roll.yaml
+esphome:
+  name: assist-live-history

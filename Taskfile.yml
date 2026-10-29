@@ -25,6 +25,7 @@ tasks:
       - task: source-only
       - task: config
       - task: compile
+      - task: compile-pre-roll
       - task: compile-probe
       - task: secrets
       - task: privacy
@@ -90,6 +91,21 @@ tasks:
           gitleaks dir "{{.WORK_ROOT}}/build/assist-live-compile-test/src" --config .gitleaks.toml --redact --exit-code 1
           uv run --locked python tools/check_release.py --compile-log "{{.WORK_ROOT}}/compile-$transport.log" --build-root "{{.WORK_ROOT}}/build/assist-live-compile-test"
         done
+
+  compile-pre-roll:
+    cmds:
+      - uv run --locked python tools/check_release.py --toolchain
+      - mkdir -p "{{.WORK_ROOT}}"
+      - |
+        set -eu
+        if uv run --locked esphome compile tests/fixtures/voice-pe-pre-roll.yaml >"{{.WORK_ROOT}}/compile-pre-roll.log" 2>&1; then
+          tail -20 "{{.WORK_ROOT}}/compile-pre-roll.log"
+        else
+          tail -80 "{{.WORK_ROOT}}/compile-pre-roll.log"
+          exit 1
+        fi
+        gitleaks dir "{{.WORK_ROOT}}/build/assist-live-compile-test/src" --config .gitleaks.toml --redact --exit-code 1
+        uv run --locked python tools/check_release.py --compile-log "{{.WORK_ROOT}}/compile-pre-roll.log" --build-root "{{.WORK_ROOT}}/build/assist-live-compile-test"
 
   compile-probe:
     cmds:

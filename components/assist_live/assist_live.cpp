@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "assist_live.h"
+#ifdef USE_ASSIST_LIVE_PRE_ROLL
+#include "pre_roll_microphone.h"
+#endif
 
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -502,9 +505,34 @@ void AssistLiveComponent::emit_event(Stage stage, uint64_t device_ms,
 void AssistLiveComponent::command_stream_start() {
   if (command_open_.exchange(true))
     return;
-  emit_event(Stage::MIC_OPEN, monotonic_ms(),
-             "{\"quality\":\"proxy\",\"source\":\"voice_assistant.on_start\"}");
+#ifdef USE_ASSIST_LIVE_PRE_ROLL
+  mic_open_ms_ = monotonic_ms();
+  mic_open_pending_ = true;
+  if (pre_roll_ != nullptr) {
+    if (pre_roll_->history_complete())
+      pre_roll_complete();
+    return;
+  }
+#endif
+  emit_mic_open_(monotonic_ms(), 0);
 }
+
+void AssistLiveComponent::emit_mic_open_(uint64_t device_ms, uint32_t pre_roll_ms) {
+  char data[128];
+  snprintf(data, sizeof(data), "{\"pre_roll_ms\":%u,\"quality\":\"proxy\","
+           "\"source\":\"voice_assistant.on_start\"}",
+           static_cast<unsigned>(pre_roll_ms));
+  emit_event(Stage::MIC_OPEN, device_ms, data);
+}
+
+#ifdef USE_ASSIST_LIVE_PRE_ROLL
+void AssistLiveComponent::pre_roll_complete() {
+  if (!mic_open_pending_)
+    return;
+  mic_open_pending_ = false;
+  emit_mic_open_(mic_open_ms_, pre_roll_ == nullptr ? 0 : pre_roll_->pre_roll_ms());
+}
+#endif
 
 void AssistLiveComponent::playback_state(bool active) {
   if (active == playback_active_)

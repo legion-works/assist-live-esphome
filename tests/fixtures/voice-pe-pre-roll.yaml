@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Compile only. Do not flash this fixture.
+packages:
+  telemetry: !include voice-pe.yaml
+  history: !include ../../examples/pre-roll.yaml

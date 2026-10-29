@@ -14,6 +14,9 @@
 namespace esphome {
 namespace assist_live {
 
+#ifdef USE_ASSIST_LIVE_PRE_ROLL
+class PreRollMicrophone;
+#endif
 class AssistLiveComponent : public Component {
 public:
   void setup() override;
@@ -37,6 +40,10 @@ public:
   void emit_event(Stage stage, uint64_t device_ms,
                   const char *canonical_data = "{}");
   void command_stream_start();
+#ifdef USE_ASSIST_LIVE_PRE_ROLL
+  void set_pre_roll(PreRollMicrophone *value) { pre_roll_ = value; }
+  void pre_roll_complete();
+#endif
   void command_stream_end() { command_open_.exchange(false); }
   void playback_state(bool active);
   // Only an externally validated sample callback can call this hook.
@@ -48,6 +55,7 @@ public:
   }
 
 protected:
+  void emit_mic_open_(uint64_t device_ms, uint32_t pre_roll_ms);
   void run_();
   std::string device_, server_;
   std::array<uint8_t, 32> key_{};
@@ -61,6 +69,11 @@ protected:
   std::atomic<uint32_t> initialization_failures_{0};
   std::atomic<uint32_t> refused_{0};
   media_player::MediaPlayer *player_{nullptr};
+#ifdef USE_ASSIST_LIVE_PRE_ROLL
+  PreRollMicrophone *pre_roll_{nullptr};
+  uint64_t mic_open_ms_{0};
+  bool mic_open_pending_{false};
+#endif
 };
 
 template <typename... Ts> class EmitEventAction : public Action<Ts...> {

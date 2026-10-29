@@ -1647,3 +1647,72 @@ git diff --check
 
 The full task includes the Python `3.12` test run and the UDP, WebSocket, and probe compiles.
 The different public-tree command is necessary when the sibling checker is not available to the task.
+
+## Optional stereo microphone history
+
+Record date: `2026-10-29` (UTC).
+
+The default example keeps the physical microphone connections unchanged.
+The optional example adds a public virtual microphone for VA only.
+`docs/pre-roll.md` gives the configuration, RAM costs, timing limits, and device-test procedure.
+
+The initial schema test stopped with:
+
+```text
+MultipleInvalid: extra keys not allowed @ data['pre_roll']
+```
+
+The native history test stopped at `snapshot includes detection-to-start bridge` before the queue implementation.
+The total-history test stopped at `total history including bridge is capped at 1000 ms` before the 1000 ms limit.
+The queue-time test stopped at `history-end delay is captured at the splice` before the diagnostic counters.
+
+The test command gave:
+
+```sh
+uv run --locked pytest tests/test_pre_roll.py -q
+```
+
+```text
+14 passed
+```
+
+These tests check schema limits, the wake-sound ID, stock source changes, and the resolved configurations.
+The stock anonymous mute `actions` and `micro_wake_word` continue to select the physical microphone.
+The native tests check stereo frame order, `ring wrap`, mute, turn selection, pacing, stalls, overflow, and queue time intervals.
+The 1000 ms history test includes a 200 ms bridge and removes 200 ms from the oldest end.
+
+Six scratch mutations compiled and stopped at named assertions:
+
+| Changed decision | Assertion |
+|---|---|
+| Ignore write readiness | `full consumer gets no writes` |
+| Ignore wake sound | `button and chime have no history` |
+| Ignore mute clear | `mute clears and prevents retention` |
+| Increase the backlog limit | `extra VA backlog is at most 256 ms` |
+| Ignore total-history limit | `total history including bridge is capped at 1000 ms` |
+| Ignore overflow count | `queue overflow is counted` |
+
+The enabled compile command gave:
+
+```sh
+task compile-pre-roll
+```
+
+```text
+PASS CMake toolchain: version=3.30.2
+INFO Successfully compiled program.
+PASS compile warnings: new_warnings=0
+```
+
+The complete repository acceptance command is `task check`.
+It includes Python 3.12 tests, default and enabled firmware compiles, warning checks, and secret checks.
+The enabled compile uses the example overlay and the fake compile-only secrets.
+The default example stays off until a satisfactory device test.
+
+No public API gives accurate VA ring occupancy.
+The component limits the estimated increase in backlog to 256 ms and counts queue overflow.
+The device test must examine queue time intervals and `passthrough_reached`, especially with history above 256 ms.
+The public final-validation context connects only VA to the virtual microphone.
+An ESPHome upgrade must give satisfactory resolved-config and generated-code results before use.
+
+Device trial not run. These checks do not include a device connection or flash.

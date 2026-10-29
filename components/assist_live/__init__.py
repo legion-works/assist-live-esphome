@@ -4,15 +4,19 @@ import re
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 from esphome import automation, yaml_util
-from esphome.components import esp32, media_player
+from esphome.components import audio, esp32, media_player, microphone, switch
 from esphome.const import CONF_ID
-from esphome.core import Lambda
+from esphome.core import ID, Lambda
 
 AUTO_LOAD = ["json"]
 
 assist_live_ns = cg.esphome_ns.namespace("assist_live")
 AssistLiveComponent = assist_live_ns.class_("AssistLiveComponent", cg.Component)
+# Do not make this ID a candidate for stock id-less microphone actions.
+# The C++ class implements Microphone. Final validation binds only VA to it.
+PreRollMicrophone = assist_live_ns.class_("PreRollMicrophone", cg.Component)
 EmitEventAction = assist_live_ns.class_("EmitEventAction", automation.Action)
 Stage = assist_live_ns.enum("Stage", is_class=True)
 STAGES = {
@@ -102,6 +106,31 @@ def event_data(value):
     return data
 
 
+def pre_roll_stream_limits(config):
+    audio.set_stream_limits(
+        min_bits_per_sample=32,
+        max_bits_per_sample=32,
+        min_channels=2,
+        max_channels=2,
+        min_sample_rate=16000,
+        max_sample_rate=16000,
+    )(config)
+    return config
+
+
+PRE_ROLL_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(PreRollMicrophone),
+            cv.Required("microphone"): cv.use_id(microphone.Microphone),
+            cv.Required("wake_sound"): cv.use_id(switch.Switch),
+            cv.Optional("length_ms", default=250): cv.int_range(min=1, max=1000),
+        }
+    ).extend(cv.COMPONENT_SCHEMA),
+    pre_roll_stream_limits,
+)
+
+
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
@@ -112,11 +141,51 @@ CONFIG_SCHEMA = cv.All(
             cv.Required("transport"): cv.one_of("udp", "websocket", lower=True),
             cv.Required("media_player_id"): cv.use_id(media_player.MediaPlayer),
             cv.Optional("port", default=8765): cv.port,
+            cv.Optional("pre_roll"): PRE_ROLL_SCHEMA,
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
     cv.only_with_framework("esp-idf"),
 )
+
+
+def validate_pre_roll(config):
+    if "pre_roll" not in config:
+        return config
+    pre_roll = config["pre_roll"]
+    full = fv.full_config.get()
+    try:
+        va = full.get_config_for_path(["voice_assistant"])
+    except KeyError:
+        raise cv.Invalid(
+            "pre_roll requires the stock Voice PE voice_assistant"
+        ) from None
+    sources = va.get("microphone", [])
+    if len(sources) != 2 or any(
+        str(source.get("microphone")) != str(pre_roll["microphone"])
+        or source.get("channels") != [channel]
+        or source.get("gain_factor") != 1
+        or source.get("bits_per_sample") != 16
+        for channel, source in enumerate(sources)
+    ):
+        raise cv.Invalid("pre_roll requires the unchanged stock two-channel VA sources")
+    audio.final_validate_audio_schema(
+        "pre_roll",
+        audio_device="microphone",
+        bits_per_sample=32,
+        channels=2,
+        sample_rate=16000,
+        audio_device_issue=True,
+    )(pre_roll)
+    # Stock sources have no IDs in YAML. List merging cannot replace them.
+    for source in sources:
+        source["microphone"] = ID(
+            str(pre_roll[CONF_ID]), is_declaration=False, type=microphone.Microphone
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = validate_pre_roll
 
 
 async def to_code(config):
@@ -137,6 +206,17 @@ async def to_code(config):
     cg.add(component.set_server(config["server"]))
     cg.add(component.set_port(config["port"]))
     cg.add(component.set_websocket(config["transport"] == "websocket"))
+    if "pre_roll" in config:
+        cg.add_define("USE_ASSIST_LIVE_PRE_ROLL")
+        pre_roll = config["pre_roll"]
+        mic = cg.new_Pvariable(pre_roll[CONF_ID])
+        await cg.register_component(mic, pre_roll)
+        await microphone.register_microphone(mic, pre_roll)
+        cg.add(mic.set_source(await cg.get_variable(pre_roll["microphone"])))
+        cg.add(mic.set_wake_sound(await cg.get_variable(pre_roll["wake_sound"])))
+        cg.add(mic.set_length_ms(pre_roll["length_ms"]))
+        cg.add(mic.set_parent(component))
+        cg.add(component.set_pre_roll(mic))
     if config["transport"] == "websocket":
         cg.add_define("USE_ASSIST_LIVE_WEBSOCKET")
         esp32.include_builtin_idf_component("tcp_transport")

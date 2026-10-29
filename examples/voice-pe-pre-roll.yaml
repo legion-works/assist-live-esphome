@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Experimental opt-in example. Do not use it before the device test.
+packages:
+  telemetry: !include voice-pe.yaml
+  history: !include pre-roll.yaml

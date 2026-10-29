@@ -212,6 +212,8 @@ int main() {
     assert(wake.device_ms == 123456789 && mic.device_ms == wake.device_ms);
     assert(std::strstr(mic.data, "proxy") &&
            std::strstr(mic.data, "voice_assistant.on_start"));
+    assert(std::strstr(mic.data, "\"pre_roll_ms\":0") &&
+           "a turn without history reports integer zero inside signed data");
     assert(component.empty());
     boot = wake.boot;
   }
