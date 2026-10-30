@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -45,6 +47,31 @@ def test_cpp_and_server_vectors_match():
     from tests.event_vectors import run_cpp_vectors
 
     assert run_cpp_vectors(ROOT / "tests/fixtures/device-vectors.json") == "PASS"
+
+
+def test_shared_vector_digest_matches_protocol():
+    digest = hashlib.sha256(
+        (ROOT / "tests/fixtures/device-vectors.json").read_bytes()
+    ).hexdigest()
+    assert digest == "c75ff4fee73ce8e2f5528583b6e1ebd2699c31cedf42eb77d470c2dfbbbe0487"
+    assert digest in (ROOT / "docs/protocol.md").read_text()
+
+
+@pytest.mark.parametrize("pre_roll_ms", [500, 0])
+def test_pre_roll_vectors_use_native_encoder(tmp_path, pre_roll_ms):
+    from tests.event_vectors import run_cpp_vectors
+
+    shared = json.loads((ROOT / "tests/fixtures/device-vectors.json").read_text())
+    selected = [
+        vector
+        for vector in shared["vectors"]
+        if vector["event"]["stage"] == "mic_open"
+        and vector["event"]["data"] == {"pre_roll_ms": pre_roll_ms}
+    ]
+    assert len(selected) == 1, f"missing mic_open vector with pre_roll_ms={pre_roll_ms}"
+    fixture = tmp_path / "vector.json"
+    fixture.write_text(json.dumps({"version": shared["version"], "vectors": selected}))
+    assert run_cpp_vectors(fixture) == "PASS"
 
 
 def test_runtime_keeps_audio_nonblocking_and_credentials_private():

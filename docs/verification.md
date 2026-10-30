@@ -1815,3 +1815,60 @@ A scratch mutation that removes this target gives the same failure.
 A second scratch mutation removes the checksum output, and three isolated command tests stop at their digest assertions.
 
 Device trial not run. No device connection or flash is part of these checks.
+
+## Shared microphone history vectors
+
+Record date: `2026-10-30` (UTC).
+
+The shared fixture contains four server vectors. The two added `mic_open` events
+use integer `pre_roll_ms` values of `500` and `0`.
+The fixture SHA-256 is `c75ff4fee73ce8e2f5528583b6e1ebd2699c31cedf42eb77d470c2dfbbbe0487`.
+Earlier digest values in this record identify earlier fixture bytes.
+
+Before the fixture update, the regression command gave three failures:
+
+```sh
+uv run --locked pytest tests/test_event_vectors.py -q -k 'shared_vector_digest or pre_roll_vectors'
+```
+
+```text
+FAILED tests/test_event_vectors.py::test_shared_vector_digest_matches_protocol
+AssertionError: missing mic_open vector with pre_roll_ms=500
+AssertionError: missing mic_open vector with pre_roll_ms=0
+3 failed, 24 deselected
+```
+
+After the update, the command gave:
+
+```sh
+uv run --locked pytest tests/test_event_vectors.py -q -k 'cpp_and_server or shared_vector_digest or pre_roll_vectors'
+cmp tests/fixtures/device-vectors.json "$WORKSPACE/assist-live-server/protocol/device-vectors.json"
+```
+
+```text
+4 passed, 23 deselected
+```
+
+The `cmp` command gave exit code 0.
+The native harness calls the actual canonical encoder and signed-event encoder for each vector.
+Python independently checks each HMAC-SHA256 digest. The native HMAC callback
+checks the key and canonical bytes before it supplies that digest to the encoder.
+The harness compares the complete packet bytes and keeps the digest-clear and signing-failure assertions.
+It does not run the device's mbedTLS implementation.
+
+One scratch mutation removed `pre_roll_ms` data from the canonical bytes.
+It compiled, then stopped at `canonical_event(argv[4], event) == expected_body`.
+The unchanged encoder gave satisfactory results for all four vectors.
+
+The acceptance gate commands are:
+
+```sh
+ESPHOME_WORK_DIR="$CHECK_TMP" PRIVATE_DENYLIST="$PRIVATE_DENYLIST" task check
+python3 "$PUBLIC_TREE_CHECKER" --root . --private-denylist "$PRIVATE_DENYLIST"
+python3 "$STE_CHECKER" docs/protocol.md docs/verification.md
+git diff --check
+```
+
+The full task includes the Python 3.12 suite and the default, WebSocket,
+history-enabled, and probe firmware compiles. These are compile-only checks.
+No device connection or flash is part of this vector check.

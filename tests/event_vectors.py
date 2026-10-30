@@ -206,7 +206,7 @@ def main() -> None:
     assert hashlib.sha256(
         (ROOT / "tests/fixtures/device-vectors.json").read_bytes()
     ).hexdigest() == (
-        "b74cf28042f22e9bd85520a864f335e0f61fddbd99559ce458f78cd5b540bc89"
+        "c75ff4fee73ce8e2f5528583b6e1ebd2699c31cedf42eb77d470c2dfbbbe0487"
     )
     print(run_cpp_vectors(ROOT / "tests/fixtures/device-vectors.json"))
     print(run_cpp_runtime())

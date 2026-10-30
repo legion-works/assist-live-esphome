@@ -10,8 +10,11 @@ The firmware and server use the same `device-vectors.json` bytes.
 Their SHA-256 is:
 
 ```text
-b74cf28042f22e9bd85520a864f335e0f61fddbd99559ce458f78cd5b540bc89
+c75ff4fee73ce8e2f5528583b6e1ebd2699c31cedf42eb77d470c2dfbbbe0487
 ```
+
+The four vectors include `mic_open` with empty data, `wake_detected` with UTF-8 data,
+and `mic_open` with integer `pre_roll_ms` values of `500` and `0`.
 
 ## Configuration and credentials
 

@@ -42,9 +42,10 @@ int main(int argc, char **argv) {
   event.seq = std::stoull(argv[6]);
   event.device_ms = std::stoull(argv[7]);
   bool found = false;
-  for (int i = 0; i < 4; ++i) {
-    if (std::string(stage_name(static_cast<Stage>(i))) == argv[8]) {
-      event.stage = static_cast<Stage>(i);
+  for (const auto stage : {Stage::WAKE_DETECTED, Stage::MIC_OPEN,
+                           Stage::PLAYBACK_START, Stage::PLAYBACK_END}) {
+    if (std::string(stage_name(stage)) == argv[8]) {
+      event.stage = stage;
       found = true;
     }
   }
