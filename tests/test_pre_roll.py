@@ -224,6 +224,116 @@ def resolved_config(path, tmp_path, *, verbose=False):
     return yaml.load(result.stdout, Loader=ConfigLoader)
 
 
+def stock_wake_config(tmp_path):
+    source = (ROOT / "tests/fixtures/voice-pe.yaml").read_text()
+    source = source.split("\nassist_live:\n", 1)[0]
+    source = "\n".join(line for line in source.splitlines() if "!include" not in line)
+    source = source.replace("../../components", str(ROOT / "components"))
+    path = tmp_path / "stock.yaml"
+    path.write_text(source)
+    (tmp_path / "secrets.yaml").write_bytes(
+        (ROOT / "tests/fixtures/secrets.yaml").read_bytes()
+    )
+    return resolved_config(path, tmp_path)
+
+
+def assert_stock_wake_handler(handler, stock_handler, arm):
+    assert handler[0] == {
+        "assist_live.emit_event": {
+            "id": "assist_live_component",
+            "stage": "wake_detected",
+            "data": "{}",
+        }
+    }, "wake timestamp must precede the stock sound and delay"
+    removed = 0
+
+    def without_arm(value):
+        nonlocal removed
+        if isinstance(value, list):
+            result = []
+            for index, item in enumerate(value):
+                if item == {"lambda": arm}:
+                    assert (
+                        index + 1 < len(value)
+                        and "voice_assistant.start" in value[index + 1]
+                    ), "pre-roll arm must be directly before the wake start"
+                    removed += 1
+                else:
+                    result.append(without_arm(item))
+            return result
+        if isinstance(value, dict):
+            return {key: without_arm(item) for key, item in value.items()}
+        return value
+
+    normalized = without_arm(handler[1:])
+    assert normalized == stock_handler, (
+        "stock wake handler drift: update the shared handler for the package pin"
+    )
+    assert removed == 1, "exactly one arm slot before the wake start"
+    return normalized
+
+
+@pytest.mark.parametrize("name", ["default", "pre-roll", "example"])
+def test_wake_timestamp_precedes_sound_and_matches_pinned_stock(tmp_path, name):
+    stock = stock_wake_config(tmp_path)
+    path = (
+        ROOT
+        / {
+            "default": "tests/fixtures/voice-pe.yaml",
+            "pre-roll": "tests/fixtures/voice-pe-pre-roll.yaml",
+            "example": "examples/voice-pe.yaml",
+        }[name]
+    )
+    source = path.read_text()
+    for relative in ("../components", "../../components"):
+        source = source.replace(f"path: {relative}", f"path: {ROOT / 'components'}")
+    for relative in ("wake-word.yaml", "../../examples/wake-word.yaml"):
+        source = source.replace(
+            f"!include {relative}", f"!include {ROOT / 'examples/wake-word.yaml'}"
+        )
+    source = source.replace(
+        "!include voice-pe.yaml", f"!include {ROOT / 'tests/fixtures/voice-pe.yaml'}"
+    ).replace(
+        "!include ../../examples/pre-roll.yaml",
+        f"!include {ROOT / 'examples/pre-roll.yaml'}",
+    )
+    source += "\nswitch:\n  - id: !extend wake_sound\n    restore_mode: ALWAYS_ON\n"
+    path = tmp_path / "sound-on.yaml"
+    path.write_text(source)
+    config = resolved_config(path, tmp_path)
+    assert (
+        next(item for item in config["switch"] if item["id"] == "wake_sound")[
+            "restore_mode"
+        ]
+        == "ALWAYS_ON"
+    )
+    assert "assist_live" not in stock
+    stock_handler = stock["micro_wake_word"]["on_wake_word_detected"]["then"]
+    assert "wake_sound" in str(stock_handler)
+    assert "300" in str(stock_handler)
+    assert_stock_wake_handler(
+        config["micro_wake_word"]["on_wake_word_detected"]["then"],
+        stock_handler,
+        "id(pre_roll_mic).wake_detected();" if name == "pre-roll" else "return;",
+    )
+    for key, value in stock["micro_wake_word"].items():
+        if key != "on_wake_word_detected":
+            assert config["micro_wake_word"][key] == value
+
+
+def test_stock_wake_handler_upgrade_drift_has_named_failure(tmp_path):
+    stock = stock_wake_config(tmp_path)
+    config = resolved_config(ROOT / "tests/fixtures/voice-pe.yaml", tmp_path)
+    changed_stock = stock["micro_wake_word"]["on_wake_word_detected"]["then"]
+    changed_stock.append({"lambda": "new_stock_action();"})
+    with pytest.raises(AssertionError, match="stock wake handler drift"):
+        assert_stock_wake_handler(
+            config["micro_wake_word"]["on_wake_word_detected"]["then"],
+            changed_stock,
+            "return;",
+        )
+
+
 def test_resolved_pre_roll_rewires_only_va_and_preserves_stock_actions(tmp_path):
     baseline = resolved_config(ROOT / "tests/fixtures/voice-pe.yaml", tmp_path)
     enabled = resolved_config(ROOT / "tests/fixtures/voice-pe-pre-roll.yaml", tmp_path)
@@ -258,6 +368,7 @@ def test_resolved_pre_roll_rewires_only_va_and_preserves_stock_actions(tmp_path)
             for item in value:
                 if item == {"lambda": "id(pre_roll_mic).wake_detected();"}:
                     removed += 1
+                    result.append({"lambda": "return;"})
                 else:
                     result.append(without_arm(item))
             return result
@@ -267,9 +378,9 @@ def test_resolved_pre_roll_rewires_only_va_and_preserves_stock_actions(tmp_path)
 
     handler = enabled["micro_wake_word"]["on_wake_word_detected"]["then"]
     stock_handler = baseline["micro_wake_word"]["on_wake_word_detected"]["then"]
-    assert handler[0] == stock_handler[-1], "timing event precedes the wake-sound delay"
+    assert handler[0] == stock_handler[0], "timing event precedes the wake-sound delay"
     normalized = without_arm(handler)
-    assert normalized[1:] + normalized[:1] == stock_handler
+    assert normalized == stock_handler
     assert removed == 1
 
     def check_arm_position(value):
@@ -319,6 +430,7 @@ def test_pre_roll_probe_resolves_with_external_compile_only_secrets(tmp_path):
         (ROOT / "tests/fixtures/voice-pe.yaml")
         .read_text()
         .replace("../../components", str(ROOT / "components"))
+        .replace("../../examples/wake-word.yaml", str(ROOT / "examples/wake-word.yaml"))
     )
     probe = (
         (ROOT / "tests/probes/pre-roll.yaml")
@@ -340,3 +452,9 @@ def test_pre_roll_probe_resolves_with_external_compile_only_secrets(tmp_path):
     assert [
         source["microphone"] for source in config["voice_assistant"]["microphone"]
     ] == ["pre_roll_mic", "pre_roll_mic"]
+    stock = stock_wake_config(tmp_path)
+    assert_stock_wake_handler(
+        config["micro_wake_word"]["on_wake_word_detected"]["then"],
+        stock["micro_wake_word"]["on_wake_word_detected"]["then"],
+        "id(pre_roll_mic).wake_detected();",
+    )

@@ -61,8 +61,30 @@ Keep all stock configuration output private.
 
 ## Native signal connections
 
-The configuration appends a timing `action` to the stock wake callback.
+`wake_detected` contains the device time at the start of the wake-word callback.
+The timing `action` runs before the wake sound and its 300 ms `delay`, with the wake sound on or off.
+This time is not the acoustic end of the wake word or the time of inference in the audio task.
+
+The example and the pre-roll probe use one replacement handler in `examples/wake-word.yaml`.
 It keeps all stock wake `actions`, with mute, timer, and stop-word behavior.
+The pre-roll overlay changes only the arm slot before `voice_assistant.start`.
+The default arm slot does nothing.
+
+ESPHome concatenates `action` lists, which puts an appended timing `action` after the stock `delay`.
+The public `Trigger` cannot accept a second automation without replacement of the stock automation.
+In ESPHome `2026.10.0`, `micro_wake_word/micro_wake_word.h:65` supplies that `Trigger`.
+The `Trigger` in `core/automation.h:523-549` holds one automation pointer.
+Its setter at line 533 replaces the pointer, and the `Automation` constructor at line 681 calls that setter.
+
+Resolved-config tests compare the shared handler with the pinned stock handler.
+They refuse changes to stock `actions` with a named failure.
+Compare the handlers at each package upgrade.
+
+Sources:
+
+- [Public wake `Trigger`](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/micro_wake_word/micro_wake_word.h#L65).
+- [Single-automation `Trigger`](https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/automation.h#L523-L549).
+- [Automation constructor](https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/automation.h#L681).
 
 `mic_open` uses the public `voice_assistant.on_start` callback as a `proxy`.
 It occurs one time for each pipeline run, not for each microphone hardware start.

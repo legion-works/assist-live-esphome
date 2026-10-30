@@ -45,6 +45,7 @@ jobs:
         run: |
           set -eu
           curl -fsSL https://raw.githubusercontent.com/legion-works/assist-live/main/tools/check_public_tree.py -o "$RUNNER_TEMP/check_public_tree.py"
+          sha256sum "$RUNNER_TEMP/check_public_tree.py"
           set --
           if [ -n "${PRIVATE_DENYLIST:-}" ]; then
             set -- --private-denylist "$PRIVATE_DENYLIST"
@@ -103,8 +104,8 @@ jobs:
         run: |
           test "$(uv run --locked esphome version)" = "Version: $EXPECTED"
           uv run --locked python tools/check_release.py --toolchain
-      - name: Compile UDP and WebSocket timing variants
-        run: task config compile
+      - name: Compile timing variants and optional pre-roll history
+        run: task config compile compile-pre-roll
       - run: task compile-probe secrets
 
   ci-complete:

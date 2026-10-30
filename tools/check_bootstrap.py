@@ -72,6 +72,13 @@ def lambda_reference(loader, node):
 TemplateLoader.add_constructor("!lambda", lambda_reference)
 
 
+def include_reference(loader, node):
+    return ("!include", loader.construct_scalar(node))
+
+
+TemplateLoader.add_constructor("!include", include_reference)
+
+
 def check_secret_names(values):
     require(set(values) == set(FAKE_SECRETS), "exact fixture secret names")
     require(values == FAKE_SECRETS, "exact fake fixture secret values")
@@ -113,6 +120,10 @@ def compare_example(fixture, example):
                 "components": ["assist_live"],
             },
         ]
+        expected["packages"] = {
+            **fixture["packages"],
+            "wake_word": ("!include", "wake-word.yaml"),
+        }
         expected["assist_live"] = {
             **fixture["assist_live"],
             "transport": example["assist_live"]["transport"],
@@ -168,28 +179,23 @@ def check_template(name, local_path, test_device):
             "wifi",
             "external_components",
             "assist_live",
-            "micro_wake_word",
             "voice_assistant",
         },
         f"{name}: must not redefine stock voice, wake words, timers, or media player",
     )
     check_pins(template, name)
     require(
-        template["packages"] == STOCK_PACKAGE, f"{name}: stock Voice PE package pin"
-    )
-    require(
-        template["micro_wake_word"]
+        template["packages"]
         == {
-            "on_wake_word_detected": [
-                {
-                    "assist_live.emit_event": {
-                        "id": "assist_live_component",
-                        "stage": "wake_detected",
-                    }
-                }
-            ]
+            **STOCK_PACKAGE,
+            "wake_word": (
+                "!include",
+                "wake-word.yaml"
+                if name.startswith("examples/")
+                else "../../examples/wake-word.yaml",
+            ),
         },
-        f"{name}: append only the wake event",
+        f"{name}: stock package pin and shared wake handler",
     )
     require(
         template["voice_assistant"]

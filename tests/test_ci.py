@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -120,6 +121,7 @@ def test_probe_compile_and_floor_tests_are_required():
     tasks = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]
     checks = tasks["check"]["cmds"]
     assert {"task": "compile-probe"} in checks
+    assert {"task": "compile-pre-roll"} in checks
     assert {"task": "unit-floor"} in checks
     probe = "\n".join(tasks["compile-probe"]["cmds"])
     for required in (
@@ -143,6 +145,9 @@ def test_probe_compile_and_floor_tests_are_required():
             runs = "\n".join(step.get("run", "") for step in job["steps"])
             if "task config compile" in runs:
                 assert "compile-probe" in runs
+                assert "compile-pre-roll" in runs, (
+                    "CI must compile the optional pre-roll configuration"
+                )
     assert any("gitleaks git" in cmd for cmd in tasks["secrets"]["cmds"])
     for task in tasks.values():
         for cmd in task["cmds"]:
@@ -203,7 +208,7 @@ def test_history_scans_require_complete_checkout():
 def test_cmake_is_forced_and_checked_before_each_build():
     taskfile = yaml.safe_load((ROOT / "Taskfile.yml").read_text())
     assert taskfile["env"]["ESPHOME_IDF_DEFAULT_TOOLS_FORCE"] == "required;cmake"
-    for name in ("compile", "compile-probe"):
+    for name in ("compile", "compile-pre-roll", "compile-probe"):
         commands = "\n".join(taskfile["tasks"][name]["cmds"])
         assert commands.index("check_release.py --toolchain") < commands.index(
             "esphome compile"
@@ -232,6 +237,14 @@ def test_ci_runs_native_vectors_and_both_transport_compiles():
         step.get("run", "") for step in workflow["compile"]["steps"]
     )
     assert "task config compile" in compile_steps
+    history = "\n".join(tasks["compile-pre-roll"]["cmds"])
+    for required in (
+        "tests/fixtures/voice-pe-pre-roll.yaml",
+        "check_release.py --compile-log",
+        "--build-root",
+        "gitleaks dir",
+    ):
+        assert required in history
 
 
 def test_ci_keeps_one_checkout_and_fetches_the_authority():
@@ -346,6 +359,9 @@ def test_external_privacy_command(
         'sys.exit(int(os.environ["SCAN_EXIT"]))\n'
     )
     uv.chmod(0o700)
+    checksum = shutil.which("sha256sum")
+    assert checksum is not None
+    (binary / "sha256sum").symlink_to(checksum)
     capture = tmp_path / "capture.json"
     curl_capture = tmp_path / "curl-capture.json"
     env = {key: value for key, value in os.environ.items() if key != "PRIVATE_DENYLIST"}
@@ -401,7 +417,13 @@ def test_external_privacy_command(
         if denylist:
             expected += ["--private-denylist", env["PRIVATE_DENYLIST"]]
         assert json.loads(capture.read_text()) == expected
-        assert result.stdout == "PASS external public tree\n"
+        prefix = (
+            f"{hashlib.sha256(b'checker').hexdigest()}  "
+            f"{tmp_path / 'check_public_tree.py'}\n"
+            if source == "ci"
+            else ""
+        )
+        assert result.stdout == prefix + "PASS external public tree\n"
     else:
         assert not capture.exists()
         assert result.stdout == "NOT CHECKED public tree\n"

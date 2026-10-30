@@ -1754,3 +1754,64 @@ The public VA interface supplies no start-origin token. It cannot close the rema
 The full acceptance commands are `task check`, the canonical public-data check, the ASD-STE100 check, and `git diff --check`.
 The canonical public-data check must run explicitly when the sibling checker is not available from a worktree.
 No device connection or flash is part of these checks.
+
+## Wake detection time before the wake sound
+
+Record date: `2026-10-30` (UTC).
+
+The default example and the pre-roll probe use one shared wake handler in `examples/wake-word.yaml`.
+The timing `action` reads the device clock before the stock sound and its 300 ms interval.
+The pre-roll overlay changes only the arm slot before the native start request.
+The default arm slot does nothing.
+
+The initial test stopped at `wake timestamp must precede the stock sound and delay`.
+The resolved-config tests set the wake sound to `ALWAYS_ON`.
+They compare the remaining handler with the actual pinned stock package, without the component.
+The tests also check the default example, the pre-roll fixture, and the pre-roll probe.
+A changed stock handler stops at `stock wake handler drift`.
+
+Command:
+
+```sh
+uv run --locked pytest tests/test_probe_device.py tests/test_pre_roll.py -q
+```
+
+Result:
+
+```text
+70 passed
+```
+
+Two isolated configuration mutations stopped at these assertions:
+
+- Timing after the stock sound interval: `wake timestamp must precede the stock sound and delay`.
+- An unrelated `delay: 1ms` in the shared handler: `stock wake handler drift`.
+
+The full-config test removes only the specified timing `action` and arm slot after the stock-equality check.
+The test compares all other configuration differences.
+The transport probe keeps its different protocol and unchanged stock handler.
+
+The acceptance commands are `task check`, the canonical public-data check, the ASD-STE100 check, and `git diff --check`.
+The compile checks include the default transports, the pre-roll fixture, and the transport probe.
+The pre-roll probe also has an isolated compile check with fake external secrets.
+The warning check refuses new compiler warnings.
+
+The GitHub Actions workflow runs `task config compile compile-pre-roll` with the managed CMake checks.
+The default and pre-roll fixtures include the shared wake package, so no other compile target is necessary.
+CI parity tests check the pre-roll target, its warning check, its generated-source `Gitleaks` command, and the toolchain check order.
+The workflow also prints the SHA-256 of the downloaded public-data checker before use.
+The isolated command test uses the actual `sha256sum` program and checks that digest.
+
+Command:
+
+```sh
+uv run --locked pytest tests/test_ci.py -q
+actionlint
+```
+
+Result: `35 passed`. The workflow syntax check gives exit code 0.
+Without the hosted pre-roll target, the parity test stops at `CI must compile the optional pre-roll configuration`.
+A scratch mutation that removes this target gives the same failure.
+A second scratch mutation removes the checksum output, and three isolated command tests stop at their digest assertions.
+
+Device trial not run. No device connection or flash is part of these checks.

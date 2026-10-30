@@ -112,16 +112,15 @@ def test_stage_requires_external_keys(tmp_path, key):
 
 
 def test_probe_extends_stock_without_native_overrides():
+    from tools.check_bootstrap import load_checked
     from tools.probe_device import ProbeLoader
 
     config = yaml.load(
         (ROOT / "tests/probes/transport.yaml").read_text(), Loader=ProbeLoader
     )
-    fixture = yaml.load(
-        (ROOT / "tests/fixtures/voice-pe.yaml").read_text(), Loader=ProbeLoader
-    )
+    fixture = load_checked(ROOT / "tests/fixtures/voice-pe.yaml")
     assert "on_boot" not in config["esphome"]
-    assert config["packages"] == fixture["packages"]
+    assert config["packages"] == {"voice_pe": fixture["packages"]["voice_pe"]}
     assert config["external_components"][0] == fixture["external_components"][0]
     for key in (
         "voice_assistant",
@@ -206,9 +205,19 @@ def flatten_config(value, prefix=""):
 def test_resolved_config_has_only_probe_additions_and_external_credentials(
     resolved_configs,
 ):
+    import copy
+
+    from tests.test_pre_roll import assert_stock_wake_handler
     from tools.check_bootstrap import check_preserved
 
     production, stock_probe = resolved_configs
+    production = copy.deepcopy(production)
+    production_handler = production["micro_wake_word"]["on_wake_word_detected"]
+    production_handler["then"] = assert_stock_wake_handler(
+        production_handler["then"],
+        stock_probe["micro_wake_word"]["on_wake_word_detected"]["then"],
+        "return;",
+    )
     for section in stock_probe:
         if section not in {
             "substitutions",
@@ -218,7 +227,7 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
             "esp32",
         }:
             check_preserved(stock_probe[section], production[section])
-    fixture, probe = (flatten_config(config) for config in resolved_configs)
+    fixture, probe = (flatten_config(config) for config in (production, stock_probe))
     only_fixture = set(fixture) - set(probe)
     only_probe = set(probe) - set(fixture)
     changed = {
@@ -227,6 +236,7 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
     assert only_fixture == {
         "substitutions.test_device",
         "substitutions.assist_live_server",
+        "substitutions.assist_live_wake_arm",
         "assist_live.id",
         "external_components[2].source.type",
         "external_components[2].source.path",
@@ -240,9 +250,6 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
         "assist_live.port",
         "assist_live.server",
         "assist_live.transport",
-        "micro_wake_word.on_wake_word_detected.then[1].assist_live.emit_event.data",
-        "micro_wake_word.on_wake_word_detected.then[1].assist_live.emit_event.id",
-        "micro_wake_word.on_wake_word_detected.then[1].assist_live.emit_event.stage",
         "voice_assistant.on_end.then[5].lambda",
         "voice_assistant.on_start.then[1].lambda",
     }
