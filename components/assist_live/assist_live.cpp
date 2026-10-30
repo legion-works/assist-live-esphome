@@ -503,6 +503,10 @@ void AssistLiveComponent::emit_event(Stage stage, uint64_t device_ms,
 }
 
 void AssistLiveComponent::command_stream_start() {
+#ifdef USE_ASSIST_LIVE_PRE_ROLL
+  if (pre_roll_ != nullptr)
+    pre_roll_->begin_turn();
+#endif
   if (command_open_.exchange(true))
     return;
 #ifdef USE_ASSIST_LIVE_PRE_ROLL
@@ -515,6 +519,15 @@ void AssistLiveComponent::command_stream_start() {
   }
 #endif
   emit_mic_open_(monotonic_ms(), 0);
+}
+
+void AssistLiveComponent::command_stream_end() {
+#ifdef USE_ASSIST_LIVE_PRE_ROLL
+  // The stock on_end list can finish after the next wake start.
+  if (pre_roll_ != nullptr && pre_roll_->turn_active())
+    return;
+#endif
+  command_open_.exchange(false);
 }
 
 void AssistLiveComponent::emit_mic_open_(uint64_t device_ms, uint32_t pre_roll_ms) {

@@ -49,8 +49,19 @@ void PreRollMicrophone::receive_(const std::vector<uint8_t> &data) {
   if (!buffer_)
     return;
   update_mute_();
-  if (listeners_ != 0 && (passthrough_ || effective_mute_)) {
-    buffer_->account_passthrough(data.size() / sizeof(StereoFrame));
+  const bool idle = !turn_active_ && !arm_pending_;
+  if (idle && !effective_mute_) {
+    for (size_t offset = 0; offset + sizeof(StereoFrame) <= data.size();
+         offset += sizeof(StereoFrame)) {
+      StereoFrame frame;
+      std::memcpy(&frame, data.data() + offset, sizeof(frame));
+      buffer_->push(&frame, 1);
+    }
+  }
+  if (listeners_ != 0 && !arm_pending_ && !wake_bound_ &&
+      (idle || passthrough_ || effective_mute_)) {
+    if (turn_active_)
+      buffer_->account_passthrough(data.size() / sizeof(StereoFrame));
     if (effective_mute_) {
       // Reuse the setup allocation, also when a source supplies a larger block.
       constexpr size_t SILENCE_BYTES = 256 * sizeof(StereoFrame);
@@ -63,7 +74,7 @@ void PreRollMicrophone::receive_(const std::vector<uint8_t> &data) {
     }
     return;
   }
-  if (data.size() % sizeof(StereoFrame) != 0) {
+  if (idle || (wake_bound_ && arm_expired_) || data.size() % sizeof(StereoFrame) != 0) {
     // The stock I2S source delivers whole stereo frames.
     return;
   }
@@ -76,16 +87,51 @@ void PreRollMicrophone::receive_(const std::vector<uint8_t> &data) {
 }
 
 void PreRollMicrophone::wake_detected() {
+  finish_turn_if_idle();
   LockGuard lock(mutex_);
   if (!buffer_)
     return;
   update_mute_();
-  if (listeners_ != 0 || effective_mute_ || wake_sound_->state)
+  auto *va = voice_assistant::global_voice_assistant;
+  if (va == nullptr || va->is_running() || turn_active_ || effective_mute_ || wake_sound_->state)
     return;
   arm_ms_ = AssistLiveComponent::monotonic_ms();
   arm_pending_ = true;
+  arm_expired_ = false;
+  passthrough_ = false;
   buffer_->arm(arm_ms_);
   ESP_LOGD(TAG, "Wake detection device_ms=%" PRIu64, buffer_->detection_ms());
+}
+
+void PreRollMicrophone::wake_started() {
+  LockGuard lock(mutex_);
+  if (!buffer_ || !arm_pending_)
+    return;
+  arm_pending_ = false;
+  auto *va = voice_assistant::global_voice_assistant;
+  if (va == nullptr || !va->is_running() || effective_mute_ || wake_sound_->state) {
+    buffer_->stop();
+    return;
+  }
+  turn_active_ = wake_bound_ = true;
+  replay_started_ = false;
+  last_pre_roll_ms_ = 0;
+  arm_to_start_ms_ = 0;
+  reported_overflows_ = 0;
+  fast_loop_.start();
+}
+
+void PreRollMicrophone::begin_turn() {
+  LockGuard lock(mutex_);
+  if (!buffer_ || turn_active_)
+    return;
+  update_mute_();
+  turn_active_ = replay_started_ = true;
+  arm_pending_ = wake_bound_ = arm_expired_ = false;
+  arm_to_start_ms_ = last_pre_roll_ms_ = 0;
+  buffer_->start(AssistLiveComponent::monotonic_ms(), true);
+  buffer_->listen();
+  passthrough_ = true;
 }
 
 void PreRollMicrophone::start() {
@@ -93,29 +139,32 @@ void PreRollMicrophone::start() {
   if (!buffer_ || listeners_++ != 0)
     return;
   update_mute_();
-  const uint64_t now = AssistLiveComponent::monotonic_ms();
-  arm_to_start_ms_ = arm_pending_ ? now - arm_ms_ : 0;
-  arm_expired_ = arm_pending_ && arm_to_start_ms_ > MAX_ARM_TO_START_MS;
-  buffer_->start(now, wake_sound_->state || !arm_pending_ || arm_expired_);
-  arm_pending_ = false;
-  passthrough_ = false;
-  reported_overflows_ = 0;
   source_->start();
   state_ = microphone::STATE_STARTING;
-  fast_loop_.start();
-  ESP_LOGD(TAG, "VA microphone start device_ms=%" PRIu64, buffer_->start_ms());
+}
+
+void PreRollMicrophone::listening() {
+  begin_turn();
+  LockGuard lock(mutex_);
+  if (!buffer_ || listeners_ == 0 || !wake_bound_)
+    return;
+  update_mute_();
+  const uint64_t now = AssistLiveComponent::monotonic_ms();
+  arm_to_start_ms_ = now - arm_ms_;
+  arm_expired_ = arm_expired_ || arm_to_start_ms_ > MAX_ARM_TO_START_MS;
+  buffer_->start(now, wake_sound_->state || arm_expired_);
+  buffer_->listen();
+  wake_bound_ = false;
+  replay_started_ = true;
+  passthrough_ = arm_expired_ || effective_mute_ || wake_sound_->state;
+  ESP_LOGD(TAG, "Replay gate device_ms=%" PRIu64, now);
   if (buffer_->trimmed_frames() != 0)
     ESP_LOGD(TAG, "History trimmed_ms=%u (1000 ms total limit)",
              static_cast<unsigned>(buffer_->trimmed_frames() / 16));
 }
 
-void PreRollMicrophone::listening() {
-  LockGuard lock(mutex_);
-  if (buffer_ && listeners_ != 0)
-    buffer_->listen();
-}
-
 void PreRollMicrophone::loop() {
+  finish_turn_if_idle();
   auto *va = voice_assistant::global_voice_assistant;
   auto *connection = va == nullptr ? nullptr : va->get_api_connection();
   const bool ready = connection != nullptr && connection->try_to_clear_buffer(false);
@@ -125,6 +174,11 @@ void PreRollMicrophone::loop() {
     if (!buffer_)
       return;
     update_mute_();
+    if (wake_bound_ && !arm_expired_ &&
+        AssistLiveComponent::monotonic_ms() - arm_ms_ > MAX_ARM_TO_START_MS) {
+      arm_expired_ = true;
+      buffer_->reset_turn();
+    }
     if (listeners_ != 0 && source_->is_running())
       state_ = microphone::STATE_RUNNING;
     StereoFrame frames[256];
@@ -145,14 +199,14 @@ void PreRollMicrophone::loop() {
                static_cast<unsigned>(buffer_->dropped_frames() / 16),
                static_cast<unsigned>(buffer_->dropped_history() / 16));
     }
-    complete = buffer_->history_remaining() == 0;
+    complete = !wake_bound_ && !arm_pending_ && buffer_->history_remaining() == 0;
   }
   if (complete)
     parent_->pre_roll_complete();
 }
 
 void PreRollMicrophone::log_turn_() {
-  ESP_LOGD(TAG, "Turn wake_ms=%" PRIu64 " va_start_ms=%" PRIu64
+  ESP_LOGD(TAG, "Turn wake_ms=%" PRIu64 " replay_gate_ms=%" PRIu64
            " history_samples=%u live_samples=%u overflow_count=%u dropped_ms=%u trimmed_ms=%u",
            buffer_->detection_ms(), buffer_->start_ms(),
            static_cast<unsigned>(buffer_->history_sent()),
@@ -174,22 +228,46 @@ void PreRollMicrophone::stop() {
     LockGuard lock(mutex_);
     if (listeners_ == 0 || --listeners_ != 0)
       return;
-    log_turn_();
     source_->stop();
     state_ = microphone::STATE_STOPPED;
     fast_loop_.stop();
     passthrough_ = false;
   }
-  parent_->pre_roll_complete();
   clear();
 }
 
+void PreRollMicrophone::finish_turn() {
+  {
+    LockGuard lock(mutex_);
+    if (!buffer_ || !turn_active_)
+      return;
+    last_pre_roll_ms_ = replay_started_ ? buffer_->pre_roll_ms() : 0;
+    log_turn_();
+    buffer_->reset_turn();
+    turn_active_ = wake_bound_ = replay_started_ = arm_pending_ = passthrough_ = false;
+    fast_loop_.stop();
+  }
+  parent_->pre_roll_complete();
+  parent_->command_stream_end();
+}
+
+void PreRollMicrophone::finish_turn_if_idle() {
+  auto *va = voice_assistant::global_voice_assistant;
+  if (va != nullptr && !va->is_running())
+    finish_turn();
+}
+
+bool PreRollMicrophone::turn_active() {
+  LockGuard lock(mutex_);
+  return turn_active_;
+}
+
 void PreRollMicrophone::clear() {
+  finish_turn();
   LockGuard lock(mutex_);
   if (buffer_)
     buffer_->stop();
-  arm_pending_ = false;
-  passthrough_ = listeners_ != 0;
+  arm_pending_ = wake_bound_ = passthrough_ = false;
 }
 
 void PreRollMicrophone::set_privacy_mute(bool muted) {
@@ -201,12 +279,13 @@ void PreRollMicrophone::set_privacy_mute(bool muted) {
 
 bool PreRollMicrophone::history_complete() {
   LockGuard lock(mutex_);
-  return !buffer_ || buffer_->history_remaining() == 0;
+  return !buffer_ || (!wake_bound_ && !arm_pending_ && buffer_->history_remaining() == 0);
 }
 
 uint32_t PreRollMicrophone::pre_roll_ms() {
   LockGuard lock(mutex_);
-  return buffer_ ? buffer_->pre_roll_ms() : 0;
+  return buffer_ && turn_active_ && replay_started_ ? buffer_->pre_roll_ms()
+                                                   : last_pre_roll_ms_;
 }
 
 void PreRollMicrophone::dump_config() {

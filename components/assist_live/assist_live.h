@@ -44,7 +44,7 @@ public:
   void set_pre_roll(PreRollMicrophone *value) { pre_roll_ = value; }
   void pre_roll_complete();
 #endif
-  void command_stream_end() { command_open_.exchange(false); }
+  void command_stream_end();
   void playback_state(bool active);
   // Only an externally validated sample callback can call this hook.
   void measured_sample_boundary(bool started, uint64_t device_ms);

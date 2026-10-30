@@ -13,9 +13,8 @@ class AssistLiveComponent;
 
 class PreRollMicrophone : public Component, public microphone::Microphone {
 public:
-  // Fail closed after two nominal 16 ms loop intervals. Public design record:
-  // https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll
-  static constexpr uint64_t MAX_ARM_TO_START_MS = 32;
+  // VA makes and clears the two new-turn rings before STT start.
+  static constexpr uint64_t MAX_ARM_TO_START_MS = 1000;
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -28,6 +27,11 @@ public:
   void set_length_ms(uint32_t value) { length_ms_ = value; }
   void set_parent(AssistLiveComponent *value) { parent_ = value; }
   void wake_detected();
+  void wake_started();
+  void begin_turn();
+  void finish_turn();
+  void finish_turn_if_idle();
+  bool turn_active();
   void listening();
   void set_privacy_mute(bool muted);
   void clear();
@@ -50,7 +54,9 @@ protected:
   size_t capacity_{0}, reported_overflows_{0};
   unsigned listeners_{0};
   uint64_t arm_ms_{0}, arm_to_start_ms_{0};
+  uint32_t last_pre_roll_ms_{0};
   bool arm_pending_{false}, arm_expired_{false};
+  bool turn_active_{false}, wake_bound_{false}, replay_started_{false};
   bool privacy_mute_{false}, effective_mute_{false}, passthrough_{false};
 };
 }

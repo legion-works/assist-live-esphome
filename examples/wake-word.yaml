@@ -2,6 +2,7 @@
 # A list merge puts timing after the stock delay. Replace the handler instead.
 substitutions:
   assist_live_wake_arm: 'return;'
+  assist_live_wake_started: 'return;'
 
 micro_wake_word:
   on_wake_word_detected:
@@ -46,3 +47,4 @@ micro_wake_word:
                               - lambda: ${assist_live_wake_arm}
                               - voice_assistant.start:
                                   wake_word: !lambda return wake_word;
+                              - lambda: ${assist_live_wake_started}

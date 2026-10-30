@@ -46,42 +46,70 @@ After an ESPHome upgrade, the resolved-config and generated-code checks must giv
 
 The overlay keeps the stock mute, timer, stop, announcement, and wake-sound decisions.
 It puts the timing `action` first, before the wake sound and its 300 ms interval.
-It adds one arm call immediately before `voice_assistant.start`, after that interval.
+It adds an arm call immediately before `voice_assistant.start`, after that interval.
+One call immediately after that start connects the arm to the wake request.
 The `then:` mapping replaces the stock list.
-A resolved-config test removes that call and moves the timing `action` to the default position.
+
+A resolved-config test removes only these two calls and the first timing `action`.
 It then compares the complete handlers.
 
 A button, follow-up, or announcement does not arm history.
 The wake-sound switch must be off to make an arm.
-At microphone start, the wake-sound switch must be off, or the turn gets no history.
+At the replay gate, the wake-sound switch must be off, or the turn gets no history.
 
-The virtual microphone accepts an arm for at most 32 ms.
-At 33 ms or more, an expired arm gives a stock no-history turn.
-The limit is two nominal 16 ms loop intervals.
-If a loop starts late, the turn can get no history.
+The post-start call checks public VA `is_running()` after the synchronous wake request.
+The pre-start call accepts an arm only while VA is in `IDLE`.
+Thus, a wake handler after a sound interval cannot arm an active button request.
+An arm without that paired call cannot give history to a button start.
+If VA does not start, the component clears the arm and its PCM.
 
-Public VA hooks do not identify the caller of a start request.
-A button start can use a pending wake arm during this 32 ms interval.
-The public start-state interface does not close this remaining interval.
-The turn log gives `arm_to_start_ms` and `arm_expired` for each turn.
-The device test must check if this limit is too short for the actual loop timing.
+The replay gate is `on_listening`, the public STT-start signal after the HA handshake.
+The component holds all frames from the arm until this gate, also with microphone sources that stay enabled.
+The two VA rings have empty buffers before this signal.
+The component sends no historical frame to VA before this gate.
+
+The detection-to-gate interval has a 1000 ms limit.
+At 1001 ms or more, the component clears PCM and gives the turn no history.
+It discards new PCM until the gate or turn end.
+The log field `arm_to_start_ms` gives detection-to-gate time, not detection-to-microphone-start time.
+`arm_expired` identifies an interval above the limit.
 
 Mute clears the PCM queue and the arm. The component keeps no new history while mute is active.
 Unmute cannot use previous history.
 Stop, error, disconnect, and shutdown clear the queue.
+
+## Logical turn boundaries
+
+The pinned VA can finish a response without stopping its microphone sources.
+An enabled stock source does not call the virtual microphone start again.
+Thus, microphone start and stop alone cannot identify all turns.
+Logical turn state does not change the count of enabled sources.
+It does not change stock source state or start/stop pairing.
+
+`on_stt_end` finishes the logical turn and logs one summary.
+`on_end`, the public `IDLE` state, and an actual microphone stop are idempotent fallbacks.
+Finish clears replay, the arm, PCM, queue measurements, and pass-through state for that turn.
+The completed `pre_roll_ms` value stays available until the next logical turn.
+An unarmed `on_start` sets this value to 0 before the timing event.
+
+Between turns, the component keeps only bounded rolling history and forwards current frames directly to enabled sources.
+It does not keep queued live audio through a response or `IDLE` interval.
+A new wake can arm while a previous stock `on_end` list waits in an error phase.
+That previous list cannot finish a newer active turn or change its timing event.
+The added `actions` follow the unchanged stock `actions`.
 
 ## Audio order and limits
 
 Wake detection holds the start index of the recent stereo history.
 New frames append after that index, through VA microphone start and the HA handshake.
 The two signals use one frame index and one queue.
-History ends at the VA microphone-start index. Live audio starts at the next index.
+History ends at the replay-gate index. Live audio starts at the next index.
 No sample is missing or duplicated at that boundary when the queue does not overflow.
 
 The configured interval is before detection.
-The detection-to-start bridge also counts as history.
+The detection-to-gate bridge also counts as history.
 Total history has a 1000 ms maximum, with that bridge.
-If necessary, microphone start removes the oldest frames and counts `trimmed_ms`.
+If necessary, the replay gate removes the oldest frames and counts `trimmed_ms`.
 The newest history stays continuous with live audio.
 
 Public wake detection supplies no acoustic word-end timestamp.
@@ -123,10 +151,14 @@ A turn without history gives 0. The proxy timestamp continues to identify `voice
 For a history turn, the component sends the event after history replay ends, or when the turn stops.
 Thus, dropped history does not count in the event value.
 
-Debug logs give device monotonic times for wake detection and VA microphone start.
-Each stopped turn logs `history_samples`, `live_samples`, `overflow_count`, `dropped_ms`, and `trimmed_ms`.
+Debug logs give device monotonic times for wake detection and the replay gate.
+Each finished turn logs `history_samples`, `live_samples`, `overflow_count`, `dropped_ms`, and `trimmed_ms`.
 The sample counts refer to frames for each signal, not the sum of the two signals.
 Logs contain no PCM content.
+
+ESPHome discards API log messages when the write buffer is full.
+ESPHome does not retry these messages.
+Missing logs alone are not proof that a turn had no history.
 
 The log gives queue time intervals at three points:
 
@@ -166,7 +198,7 @@ The native and compile gates do not include a device test.
 
 ## Sources
 
-Source access date: 2026-10-29 (UTC).
+Source access date: 2026-10-30 (UTC).
 
 - [Stock wake handler](https://github.com/esphome/home-assistant-voice-pe/blob/2644f4c794271d735d182ca7ebf899ed46164f4e/home-assistant-voice.yaml#L1739-L1780): the usual branch starts VA after the mute, timer, stop, and announcement decisions.
 - [VA microphone enable](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.cpp#L315-L356): the loop starts microphone sources after the start request changes state at lines 683 to 695.
@@ -176,3 +208,9 @@ Source access date: 2026-10-29 (UTC).
 - [Public start request](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.cpp#L683-L695): `request_start` supplies no start-origin token.
 - [Public active state](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.h#L182): `is_running` includes microphone-start and microphone-stop states.
 - [Default loop interval](https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/application.h#L526): the nominal interval is 16 ms.
+- [Stock source pairing](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/microphone/microphone_source.cpp#L13-L25): an enabled source does not forward the next start.
+- [Ring allocation and clearing](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.cpp#L122-L175): VA makes the two rings before the start request to HA.
+- [Audio callbacks](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.cpp#L37-L52): each source writes only to its live ring.
+- [Response end](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.cpp#L498-L525): response end can go directly to `IDLE`.
+- [Run-end selection](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.cpp#L914-L925): run end does not stop sources from a response state.
+- [API log writes](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/api/api_connection.cpp#L2411-L2423): a full write buffer can discard a log message.

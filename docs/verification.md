@@ -1872,3 +1872,75 @@ git diff --check
 The full task includes the Python 3.12 suite and the default, WebSocket,
 history-enabled, and probe firmware compiles. These are compile-only checks.
 No device connection or flash is part of this vector check.
+
+## Logical microphone turn boundaries
+
+Record date: `2026-10-30` (UTC).
+
+The pinned VA can finish a response without stopping its microphone sources.
+An enabled source does not forward the next start to the virtual microphone.
+Thus, source start/stop alone left history measurements and replay state from a previous turn.
+The component uses logical turn boundaries and keeps the stock source count unchanged.
+See [logical turn boundaries](pre-roll.md#logical-turn-boundaries) for the sources and signal order.
+
+The paired wake calls select history before and after the synchronous wake request.
+Replay waits for the public STT-start signal on all turns.
+The detection-to-gate limit is 1000 ms, not the previous 32 ms detection-to-microphone-start interval.
+STT end finishes the turn one time and clears remaining queued PCM.
+An unarmed turn reports 0 history.
+
+The initial native regression command was:
+
+```sh
+uv run --locked pytest tests/test_pre_roll.py::test_native_microphone_adapter_callback_allocations -q
+```
+
+It stopped at `logical turn hooks are required for retained sources`.
+Other initial checks stopped at `on_start: stock actions unchanged and lifecycle action last` and these native assertions:
+
+- `delayed on_end cannot reassign the next turn timing event`.
+- `follow-up timing event reports zero history`.
+- `mute preserves history already sent this turn`.
+- `running VA cannot accept delayed wake history`.
+
+The native harness uses the actual component, buffer, timing-event queue, and pinned `MicrophoneSource` implementation.
+It checks two usual turns without a source stop, stereo sample order, the replay gate, inter-turn audio, and an unusual stop.
+The configuration test removes only the paired wake calls, then compares the result with stock.
+The default post-start slot is a no-op. The default example has no microphone history.
+
+Six scratch mutations compiled, then stopped at these assertions:
+
+1. Bypass the replay gate: `nothing delivered before STT replay gate`.
+2. Keep inter-turn audio queued: `inter-turn live frames have no queue delay`.
+3. Remove the summary: `exactly one summary per logical turn`.
+4. Remove the delayed-end guard: `delayed on_end cannot reassign the next turn timing event`.
+5. Remove the unarmed-start call: `follow-up timing event reports zero history`.
+6. Remove the public `IDLE` guard: `running VA cannot accept delayed wake history`.
+
+Command:
+
+```sh
+task lint typecheck unit
+```
+
+Result:
+
+```text
+12 files already formatted
+All checks passed!
+Success: no issues found in 12 source files
+213 passed
+```
+
+The ordered acceptance commands are:
+
+```sh
+ESPHOME_WORK_DIR="$CHECK_TMP" PRIVATE_DENYLIST="$PRIVATE_DENYLIST" task check
+UV_PROJECT_ENVIRONMENT="$CHECK_TMP/venv312" uv run --locked --python 3.12 pytest tests/ -q
+python3 "$STE_CHECKER" docs/pre-roll.md docs/verification.md
+python3 "$PUBLIC_TREE_CHECKER" --root . --private-denylist "$PRIVATE_DENYLIST" --history
+git diff --check
+```
+
+Compile checks include the default transports, the pre-roll fixture, and the probes with pinned CMake `3.30.2`.
+Device trial not run. No device connection or flash is part of these checks.

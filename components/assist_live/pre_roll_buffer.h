@@ -72,6 +72,15 @@ public:
     armed_ = active_ = listening_ = false;
   }
 
+  void reset_turn() {
+    stop();
+    history_sent_ = live_sent_ = handed_ = 0;
+    dropped_ = dropped_history_ = overflows_ = trimmed_ = 0;
+    detection_ms_ = start_ms_ = next_ms_ = 0;
+    first_live_queue_ms_ = history_end_queue_ms_ = -1;
+    passthrough_reached_ = false;
+  }
+
   void mute(bool muted) {
     if (muted)
       stop();

@@ -9,10 +9,17 @@ assist_live:
 
 substitutions:
   assist_live_wake_arm: 'id(pre_roll_mic).wake_detected();'
+  assist_live_wake_started: 'id(pre_roll_mic).wake_started();'
 
 voice_assistant:
+  on_start:
+    - lambda: id(pre_roll_mic).begin_turn();
   on_listening:
     - lambda: id(pre_roll_mic).listening();
+  on_stt_end:
+    - lambda: id(pre_roll_mic).finish_turn();
+  on_end:
+    - lambda: id(pre_roll_mic).finish_turn_if_idle();
   on_error:
     - lambda: id(pre_roll_mic).clear();
   on_client_disconnected:

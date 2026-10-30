@@ -237,6 +237,7 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
         "substitutions.test_device",
         "substitutions.assist_live_server",
         "substitutions.assist_live_wake_arm",
+        "substitutions.assist_live_wake_started",
         "assist_live.id",
         "external_components[2].source.type",
         "external_components[2].source.path",

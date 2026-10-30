@@ -135,7 +135,7 @@ def test_native_pre_roll_history_and_pacing(tmp_path):
 def test_native_microphone_adapter_callback_allocations(tmp_path):
     from importlib import resources
 
-    from tests.event_vectors import COMPONENT, compiler, run
+    from tests.event_vectors import COMPONENT, compiler, native_json_include, run
 
     include = tmp_path / "include"
     for header in (
@@ -155,6 +155,11 @@ def test_native_microphone_adapter_callback_allocations(tmp_path):
     path.write_text(
         resources.files("esphome")
         .joinpath("components/microphone/microphone.h")
+        .read_text()
+    )
+    path.with_name("microphone_source.h").write_text(
+        resources.files("esphome")
+        .joinpath("components/microphone/microphone_source.h")
         .read_text()
     )
     log = include / "esphome/core/log.h"
@@ -179,16 +184,29 @@ def test_native_microphone_adapter_callback_allocations(tmp_path):
             "-I",
             str(ROOT / "tests/native/include"),
             "-I",
+            native_json_include().name,
+            "-I",
             str(COMPONENT),
             str(ROOT / "tests/native/microphone_adapter.cpp"),
+            str(COMPONENT / "event_codec.cpp"),
+            str(COMPONENT / "assist_live.cpp"),
+            str(
+                resources.files("esphome").joinpath(
+                    "components/microphone/microphone_source.cpp"
+                )
+            ),
             "-o",
             executable,
         ]
     )
     output = run([executable])
     assert "PASS microphone adapter" in output
-    assert "arm_to_start_ms=32 arm_expired=0" in output
-    assert "arm_to_start_ms=33 arm_expired=1" in output
+    lifecycle = output.split("BEGIN retained-source lifecycle\n", 1)[1].split(
+        "PASS retained-source lifecycle", 1
+    )[0]
+    assert lifecycle.count("Turn wake_ms=") == 4, "exactly one summary per logical turn"
+    assert "arm_to_start_ms=1000 arm_expired=0" in output
+    assert "arm_to_start_ms=1001 arm_expired=1" in output
 
 
 def resolved_config(path, tmp_path, *, verbose=False):
@@ -245,19 +263,25 @@ def assert_stock_wake_handler(handler, stock_handler, arm):
             "data": "{}",
         }
     }, "wake timestamp must precede the stock sound and delay"
-    removed = 0
+    removed = {"arm": 0, "started": 0}
+    started = arm.replace("wake_detected", "wake_started")
 
     def without_arm(value):
-        nonlocal removed
         if isinstance(value, list):
             result = []
             for index, item in enumerate(value):
-                if item == {"lambda": arm}:
-                    assert (
-                        index + 1 < len(value)
-                        and "voice_assistant.start" in value[index + 1]
-                    ), "pre-roll arm must be directly before the wake start"
-                    removed += 1
+                if (
+                    item == {"lambda": arm}
+                    and index + 1 < len(value)
+                    and "voice_assistant.start" in value[index + 1]
+                ):
+                    removed["arm"] += 1
+                elif (
+                    item == {"lambda": started}
+                    and index > 0
+                    and "voice_assistant.start" in value[index - 1]
+                ):
+                    removed["started"] += 1
                 else:
                     result.append(without_arm(item))
             return result
@@ -269,8 +293,28 @@ def assert_stock_wake_handler(handler, stock_handler, arm):
     assert normalized == stock_handler, (
         "stock wake handler drift: update the shared handler for the package pin"
     )
-    assert removed == 1, "exactly one arm slot before the wake start"
+    assert removed == {"arm": 1, "started": 1}, (
+        "exactly paired pre/post wake start slots"
+    )
     return normalized
+
+
+def test_pre_roll_trigger_actions_append_without_stock_drift(tmp_path):
+    baseline = resolved_config(ROOT / "tests/fixtures/voice-pe.yaml", tmp_path)
+    enabled = resolved_config(ROOT / "tests/fixtures/voice-pe-pre-roll.yaml", tmp_path)
+    for trigger, action in {
+        "on_start": "id(pre_roll_mic).begin_turn();",
+        "on_listening": "id(pre_roll_mic).listening();",
+        "on_stt_end": "id(pre_roll_mic).finish_turn();",
+        "on_end": "id(pre_roll_mic).finish_turn_if_idle();",
+        "on_error": "id(pre_roll_mic).clear();",
+        "on_client_disconnected": "id(pre_roll_mic).clear();",
+    }.items():
+        before = baseline["voice_assistant"].get(trigger, {"then": []})["then"]
+        after = enabled["voice_assistant"][trigger]["then"]
+        assert after == before + [{"lambda": action}], (
+            f"{trigger}: stock actions unchanged and lifecycle action last"
+        )
 
 
 @pytest.mark.parametrize("name", ["default", "pre-roll", "example"])
@@ -368,6 +412,8 @@ def test_resolved_pre_roll_rewires_only_va_and_preserves_stock_actions(tmp_path)
             for item in value:
                 if item == {"lambda": "id(pre_roll_mic).wake_detected();"}:
                     removed += 1
+                    result.append({"lambda": "return;"})
+                elif item == {"lambda": "id(pre_roll_mic).wake_started();"}:
                     result.append({"lambda": "return;"})
                 else:
                     result.append(without_arm(item))
