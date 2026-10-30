@@ -10,6 +10,9 @@ assist_live:
 micro_wake_word:
   on_wake_word_detected:
     then:
+      - assist_live.emit_event:
+          id: assist_live_component
+          stage: wake_detected
       - if:
           condition:
             switch.is_off: master_mute_switch
@@ -35,7 +38,6 @@ micro_wake_word:
                                   announcement: true
                                   id: external_media_player
                             else:
-                              - lambda: id(pre_roll_mic).wake_detected();
                               - if:
                                   condition:
                                     switch.is_on: wake_sound
@@ -45,11 +47,9 @@ micro_wake_word:
                                         priority: true
                                         sound_file: wake_word_triggered_sound
                                     - delay: 300ms
+                              - lambda: id(pre_roll_mic).wake_detected();
                               - voice_assistant.start:
                                   wake_word: !lambda return wake_word;
-      - assist_live.emit_event:
-          id: assist_live_component
-          stage: wake_detected
 
 voice_assistant:
   on_listening:

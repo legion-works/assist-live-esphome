@@ -1716,3 +1716,41 @@ The public final-validation context connects only VA to the virtual microphone.
 An ESPHome upgrade must give satisfactory resolved-config and generated-code results before use.
 
 Device trial not run. These checks do not include a device connection or flash.
+
+### Muted callbacks and short-lived wake arms
+
+Record date: `2026-10-30` (UTC).
+
+The adapter makes one 2048-byte `silence_` buffer during setup.
+The native adapter test compiles the actual microphone implementation with the pinned public microphone header.
+It counts C++ allocations during muted receive callbacks for 8, 1000, 2048, and 4096 input bytes.
+Each handoff has at most 256 stereo frames. The test checks each byte for 0 and keeps the total byte count.
+
+The initial counted-allocation test stopped at `muted real receive path allocates nothing`.
+The initial expiry test stopped at `33 ms arm fails closed to no history`.
+The timing test stopped at `timing event precedes the wake-sound delay`.
+After the changes, the command gave:
+
+```sh
+uv run --locked pytest tests/test_pre_roll.py -q --tb=short
+```
+
+```text
+15 passed
+```
+
+Two scratch mutations compiled and stopped at the named native assertions:
+
+- A new `silence` vector in each callback: `muted real receive path allocates nothing`.
+- A 1000 ms arm limit: `33 ms arm fails closed to no history`.
+
+The enabled handler sends the timing event before the stock wake-sound interval.
+The arm call is immediately before the native start request and does nothing when wake sound is on.
+The native adapter accepts an arm at 32 ms and refuses it at 33 ms.
+The turn log records the measured arm age and expiry.
+The public VA interface supplies no start-origin token. It cannot close the remaining 32 ms interval.
+`docs/pre-roll.md` gives that limit and its device-test requirements.
+
+The full acceptance commands are `task check`, the canonical public-data check, the ASD-STE100 check, and `git diff --check`.
+The canonical public-data check must run explicitly when the sibling checker is not available from a worktree.
+No device connection or flash is part of these checks.

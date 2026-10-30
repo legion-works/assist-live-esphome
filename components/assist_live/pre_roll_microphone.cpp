@@ -28,6 +28,7 @@ void PreRollMicrophone::setup() {
   std::memset(memory_, 0, capacity_ * sizeof(StereoFrame));
   buffer_.reset(new PreRollBuffer(memory_, length_ms_ * 16, capacity_));
   output_.reserve(256 * sizeof(StereoFrame));
+  silence_.resize(256 * sizeof(StereoFrame), 0);
   source_->add_data_callback([this](const std::vector<uint8_t> &data) { receive_(data); });
 }
 
@@ -37,6 +38,8 @@ void PreRollMicrophone::update_mute_() {
     return;
   effective_mute_ = muted;
   buffer_->mute(muted);
+  if (muted)
+    arm_pending_ = false;
   if (listeners_ != 0)
     passthrough_ = true;
 }
@@ -49,8 +52,12 @@ void PreRollMicrophone::receive_(const std::vector<uint8_t> &data) {
   if (listeners_ != 0 && (passthrough_ || effective_mute_)) {
     buffer_->account_passthrough(data.size() / sizeof(StereoFrame));
     if (effective_mute_) {
-      std::vector<uint8_t> silence(data.size(), 0);
-      data_callbacks_.call(silence);
+      // Reuse the setup allocation, also when a source supplies a larger block.
+      constexpr size_t SILENCE_BYTES = 256 * sizeof(StereoFrame);
+      for (size_t offset = 0; offset < data.size(); offset += SILENCE_BYTES) {
+        silence_.resize(std::min(SILENCE_BYTES, data.size() - offset));
+        data_callbacks_.call(silence_);
+      }
     } else {
       data_callbacks_.call(data);
     }
@@ -73,7 +80,11 @@ void PreRollMicrophone::wake_detected() {
   if (!buffer_)
     return;
   update_mute_();
-  buffer_->arm(AssistLiveComponent::monotonic_ms());
+  if (listeners_ != 0 || effective_mute_ || wake_sound_->state)
+    return;
+  arm_ms_ = AssistLiveComponent::monotonic_ms();
+  arm_pending_ = true;
+  buffer_->arm(arm_ms_);
   ESP_LOGD(TAG, "Wake detection device_ms=%" PRIu64, buffer_->detection_ms());
 }
 
@@ -82,7 +93,11 @@ void PreRollMicrophone::start() {
   if (!buffer_ || listeners_++ != 0)
     return;
   update_mute_();
-  buffer_->start(AssistLiveComponent::monotonic_ms(), wake_sound_->state);
+  const uint64_t now = AssistLiveComponent::monotonic_ms();
+  arm_to_start_ms_ = arm_pending_ ? now - arm_ms_ : 0;
+  arm_expired_ = arm_pending_ && arm_to_start_ms_ > MAX_ARM_TO_START_MS;
+  buffer_->start(now, wake_sound_->state || !arm_pending_ || arm_expired_);
+  arm_pending_ = false;
   passthrough_ = false;
   reported_overflows_ = 0;
   source_->start();
@@ -150,6 +165,8 @@ void PreRollMicrophone::log_turn_() {
            buffer_->first_live_queue_ms(), buffer_->history_end_queue_ms(),
            static_cast<unsigned>(buffer_->queue_delay_ms()),
            static_cast<unsigned>(buffer_->passthrough_reached()));
+  ESP_LOGD(TAG, "Turn arm_to_start_ms=%" PRIu64 " arm_expired=%u",
+           arm_to_start_ms_, static_cast<unsigned>(arm_expired_));
 }
 
 void PreRollMicrophone::stop() {
@@ -171,6 +188,7 @@ void PreRollMicrophone::clear() {
   LockGuard lock(mutex_);
   if (buffer_)
     buffer_->stop();
+  arm_pending_ = false;
   passthrough_ = listeners_ != 0;
 }
 

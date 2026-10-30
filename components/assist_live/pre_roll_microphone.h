@@ -13,6 +13,9 @@ class AssistLiveComponent;
 
 class PreRollMicrophone : public Component, public microphone::Microphone {
 public:
+  // Fail closed after two nominal 16 ms loop intervals. Public design record:
+  // https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll
+  static constexpr uint64_t MAX_ARM_TO_START_MS = 32;
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -42,10 +45,12 @@ protected:
   HighFrequencyLoopRequester fast_loop_;
   StereoFrame *memory_{nullptr};
   std::unique_ptr<PreRollBuffer> buffer_;
-  std::vector<uint8_t> output_;
+  std::vector<uint8_t> output_, silence_;
   uint32_t length_ms_{250};
   size_t capacity_{0}, reported_overflows_{0};
   unsigned listeners_{0};
+  uint64_t arm_ms_{0}, arm_to_start_ms_{0};
+  bool arm_pending_{false}, arm_expired_{false};
   bool privacy_mute_{false}, effective_mute_{false}, passthrough_{false};
 };
 }

@@ -132,6 +132,65 @@ def test_native_pre_roll_history_and_pacing(tmp_path):
     assert run([executable]) == "PASS pre-roll\n"
 
 
+def test_native_microphone_adapter_callback_allocations(tmp_path):
+    from importlib import resources
+
+    from tests.event_vectors import COMPONENT, compiler, run
+
+    include = tmp_path / "include"
+    for header in (
+        "core/defines.h",
+        "core/component.h",
+        "core/helpers.h",
+        "components/audio/audio.h",
+        "components/switch/switch.h",
+        "components/voice_assistant/voice_assistant.h",
+        "components/api/api_connection.h",
+    ):
+        path = include / "esphome" / header
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('#include "pre_roll_host.h"\n')
+    path = include / "esphome/components/microphone/microphone.h"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        resources.files("esphome")
+        .joinpath("components/microphone/microphone.h")
+        .read_text()
+    )
+    log = include / "esphome/core/log.h"
+    log.write_text(
+        (ROOT / "tests/native/include/esphome/core/log.h").read_text()
+        + "\n#define ESP_LOGD ESP_LOGCONFIG\n#define ESP_LOGE ESP_LOGCONFIG\n"
+    )
+    executable = str(tmp_path / "microphone_adapter")
+    run(
+        [
+            compiler(),
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-pthread",
+            "-DUSE_ASSIST_LIVE_PRE_ROLL",
+            "-I",
+            str(include),
+            "-I",
+            str(ROOT / "tests/native"),
+            "-I",
+            str(ROOT / "tests/native/include"),
+            "-I",
+            str(COMPONENT),
+            str(ROOT / "tests/native/microphone_adapter.cpp"),
+            "-o",
+            executable,
+        ]
+    )
+    output = run([executable])
+    assert "PASS microphone adapter" in output
+    assert "arm_to_start_ms=32 arm_expired=0" in output
+    assert "arm_to_start_ms=33 arm_expired=1" in output
+
+
 def resolved_config(path, tmp_path, *, verbose=False):
     import yaml
 
@@ -206,11 +265,26 @@ def test_resolved_pre_roll_rewires_only_va_and_preserves_stock_actions(tmp_path)
             return {key: without_arm(item) for key, item in value.items()}
         return value
 
-    assert (
-        without_arm(enabled["micro_wake_word"]["on_wake_word_detected"])
-        == baseline["micro_wake_word"]["on_wake_word_detected"]
-    )
+    handler = enabled["micro_wake_word"]["on_wake_word_detected"]["then"]
+    stock_handler = baseline["micro_wake_word"]["on_wake_word_detected"]["then"]
+    assert handler[0] == stock_handler[-1], "timing event precedes the wake-sound delay"
+    normalized = without_arm(handler)
+    assert normalized[1:] + normalized[:1] == stock_handler
     assert removed == 1
+
+    def check_arm_position(value):
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                if item == {"lambda": "id(pre_roll_mic).wake_detected();"}:
+                    assert "voice_assistant.start" in value[index + 1], (
+                        "arm is adjacent to the specific wake start"
+                    )
+                check_arm_position(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                check_arm_position(item)
+
+    check_arm_position(handler)
 
     physical_users = []
 

@@ -45,13 +45,26 @@ After an ESPHome upgrade, the resolved-config and generated-code checks must giv
 ## Turn selection
 
 The overlay keeps the stock mute, timer, stop, announcement, and wake-sound decisions.
-It adds one arm call in the usual wake-to-start branch.
+It puts the timing `action` first, before the wake sound and its 300 ms interval.
+It adds one arm call immediately before `voice_assistant.start`, after that interval.
 The `then:` mapping replaces the stock list.
-A resolved-config test removes that one call and compares the complete handler with the default handler.
+A resolved-config test removes that call and moves the timing `action` to the default position.
+It then compares the complete handlers.
 
 A button, follow-up, or announcement does not arm history.
-An arm expires after one second.
+The wake-sound switch must be off to make an arm.
 At microphone start, the wake-sound switch must be off, or the turn gets no history.
+
+The virtual microphone accepts an arm for at most 32 ms.
+At 33 ms or more, an expired arm gives a stock no-history turn.
+The limit is two nominal 16 ms loop intervals.
+If a loop starts late, the turn can get no history.
+
+Public VA hooks do not identify the caller of a start request.
+A button start can use a pending wake arm during this 32 ms interval.
+The public start-state interface does not close this remaining interval.
+The turn log gives `arm_to_start_ms` and `arm_expired` for each turn.
+The device test must check if this limit is too short for the actual loop timing.
 
 Mute clears the PCM queue and the arm. The component keeps no new history while mute is active.
 Unmute cannot use previous history.
@@ -130,6 +143,10 @@ The one-second queue margin makes the maximum queue allocation 256000 bytes.
 The 250 ms setting uses 160000 PCM bytes.
 The ESPHome `RAMAllocator` prefers PSRAM and falls back to internal RAM.
 There is also a 2048-byte output-vector reserve, a 2048-byte loop stack buffer, and small state objects.
+
+Setup also makes a 2048-byte `silence_` buffer.
+Muted callbacks use it in units of at most 256 stereo frames.
+The adapter makes no new heap allocation in a muted callback.
 The component does not replace or borrow the stock VA or wake-word buffers.
 
 ## Device test
@@ -142,6 +159,8 @@ Check the two HA signal selections and the history-to-live boundary.
 
 Test wake sound on and off, mute, button starts, follow-ups, announcements, timer stop, and the stop word.
 Test slow API connections, stalled connections, and connections after a stall.
+Test button starts during wake processing and cancellation before microphone start.
+Examine `arm_to_start_ms` and `arm_expired`, with wake sound on and off.
 Reject a usual run with dropped frames, queue overflow, missing command onset, or a changed stock function.
 The native and compile gates do not include a device test.
 
@@ -154,3 +173,6 @@ Source access date: 2026-10-29 (UTC).
 - [Public STT signal](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.cpp#L794-L796): STT start calls `on_listening`.
 - [Configuration validation](https://github.com/esphome/esphome/blob/2026.10.0/esphome/config.py#L1239-L1244): the public context holds the validated result object.
 - [Code generation](https://github.com/esphome/esphome/blob/2026.10.0/esphome/__main__.py#L797-L808): `to_code` receives sections from `CORE.config`, which line 2749 sets to the validated configuration.
+- [Public start request](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.cpp#L683-L695): `request_start` supplies no start-origin token.
+- [Public active state](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/voice_assistant/voice_assistant.h#L182): `is_running` includes microphone-start and microphone-stop states.
+- [Default loop interval](https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/application.h#L526): the nominal interval is 16 ms.
