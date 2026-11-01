@@ -1944,3 +1944,70 @@ git diff --check
 
 Compile checks include the default transports, the pre-roll fixture, and the probes with pinned CMake `3.30.2`.
 Device trial not run. No device connection or flash is part of these checks.
+
+## Optional diagnostic entities
+
+Record date: `2026-11-01` (UTC).
+
+The component has optional public sensor and binary-sensor entities.
+All entity categories default to `diagnostic`.
+The default example has no diagnostic entities from this component.
+The opt-in pre-roll example and compile fixture configure the same entities.
+See [diagnostic values and limits](diagnostics.md) for units, counter meanings, and publication intervals.
+
+Logical turn finish saves a snapshot before buffer cleanup.
+Only the main loop publishes it.
+Counters and WebSocket connection state publish at most one time each second.
+Per-turn numeric sensors default to `force_update: true` for equal history results.
+An unreached timing point gives an unknown value.
+
+The shared PCM push helper keeps the previous `IDLE` and active paths unchanged.
+Pacing, lookback length, and the 256 ms backlog rule do not change.
+
+The initial tests gave these results:
+
+```sh
+uv run --locked pytest tests/test_diagnostics.py -q
+uv run --locked pytest tests/test_event_vectors.py -q -k runtime_keeps
+```
+
+```text
+5 failed, 1 passed
+FAIL missing diagnostic snapshot and publish schedule
+1 failed, 26 deselected
+sender diagnostics must distinguish writes from confirmations
+```
+
+A subsequent initial history check stopped at `identical completed-turn values retain history updates`.
+The native, resolved-config, lifecycle, and sender command then gave `29 passed`.
+The complete unit suite contains 221 tests.
+
+Seven scratch mutations stopped at these assertions:
+
+1. Replace history with 0: `snapshot counts history sent`.
+2. Keep a consumed snapshot pending: `one publication per completed turn`.
+3. Decrease the counter interval: `counter publication limited to one second`.
+4. Remove the pong increment: `confirmed counts matching pongs only`.
+5. Remove the UDP write increment: `sent counts successful event writes only`.
+6. Remove the finish snapshot: `one fresh entity snapshot per completed turn`.
+7. Accept UDP connection claims: `DID NOT RAISE` at the named transport requirement.
+
+The six native mutations compiled before their behavioral failures.
+The configuration mutation used the actual public schema.
+The main-loop tests use the actual component, buffer, sender, and pinned `MicrophoneSource` implementation.
+Test entities stop if publication occurs without the main-loop call.
+
+The acceptance commands are:
+
+```sh
+ESPHOME_WORK_DIR="$CHECK_TMP" PRIVATE_DENYLIST="$PRIVATE_DENYLIST" task check
+UV_PROJECT_ENVIRONMENT="$CHECK_TMP/venv312" uv run --locked --python 3.12 pytest tests/ -q
+python3 "$STE_CHECKER" docs/diagnostics.md docs/verification.md STRUCTURE.md
+python3 "$PUBLIC_TREE_CHECKER" --root . --private-denylist "$PRIVATE_DENYLIST" --history
+git diff --check
+```
+
+The compile targets include default UDP, default WebSocket, pre-roll, and the transport probe.
+An isolated pre-roll probe compile uses WebSocket diagnostics and fake external compile values.
+Each compile uses the pinned CMake `3.30.2` check and the `new_warnings=0` requirement.
+No device access, flash, or upload is part of these checks.

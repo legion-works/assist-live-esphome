@@ -222,6 +222,9 @@ public:
   virtual bool poll() { return true; }
   virtual bool pending() const { return false; }
   virtual uint32_t refused_events() const { return 0; }
+  virtual bool connected() const { return false; }
+  uint32_t events_sent() const { return sent_; }
+  uint32_t events_confirmed() const { return confirmed_; }
   uint32_t initialization_failures() const { return initialization_failures_; }
 
 protected:
@@ -232,6 +235,7 @@ protected:
     ESP_LOGW(TAG, "Timing sender initialization failed; retry in 5 s");
   }
   uint32_t initialization_failures_{0};
+  uint32_t sent_{0}, confirmed_{0};
   std::atomic<uint32_t> *failures_;
 };
 
@@ -264,8 +268,10 @@ public:
       return false;
     if (sendto(fd_, packet.data(), packet.size(), MSG_DONTWAIT,
                reinterpret_cast<const sockaddr *>(&endpoint_.address),
-               sizeof(endpoint_.address)) == static_cast<int>(packet.size()))
+               sizeof(endpoint_.address)) == static_cast<int>(packet.size())) {
+      ++sent_;
       return true;
+    }
     endpoint_.failed(now);
     return false;
   }
@@ -284,6 +290,7 @@ public:
       : EventSender(failures), endpoint_(endpoint) {}
   ~WebSocketSender() override { destroy_(); }
   bool pending() const override { return pending_; }
+  bool connected() const override { return connected_; }
   uint32_t refused_events() const override { return refused_; }
   bool send(const std::string &packet) override {
     const auto now = AssistLiveComponent::monotonic_ms();
@@ -340,6 +347,7 @@ public:
         packet.data(), packet.size(), 50);
     if (sent != static_cast<int>(packet.size()))
       return failed_(now);
+    ++sent_;
     // A matching pong follows the event in the server's receive loop.
     // A local TCP write alone cannot detect a half-open connection.
     ++probe_id_;
@@ -402,6 +410,7 @@ public:
       } else if (opcode == WS_TRANSPORT_OPCODES_PONG) {
         if (pending_ && size == sizeof(probe_) &&
             std::memcmp(control, probe_, sizeof(probe_)) == 0) {
+          ++confirmed_;
           pending_ = false;
           overload_delay_ = 5000;
         }
@@ -574,9 +583,17 @@ void AssistLiveComponent::run_() {
   if (!sender)
     sender.reset(new UdpSender(endpoint, &initialization_failures_));
   Event event;
+  const auto snapshot = [&]() {
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+    sent_.store(sender->events_sent());
+    confirmed_.store(sender->events_confirmed());
+    connected_.store(sender->connected());
+#endif
+  };
   while (!stop_requested_.load()) {
     const bool was_pending = sender->pending();
     const bool confirmed = sender->poll();
+    snapshot();
     if (was_pending && !sender->pending() && !confirmed)
       ++dropped_;
     refused_.store(sender->refused_events());
@@ -598,11 +615,15 @@ void AssistLiveComponent::run_() {
         encode_event(device_, event, key_.data(), key_.size(), sign_hmac);
     if (packet.empty() || (!sender->send(packet) && !sender->pending()))
       ++dropped_;
+    snapshot();
     refused_.store(sender->refused_events());
   }
   if (sender->pending())
     ++dropped_;
   sender.reset();
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+  connected_.store(false);
+#endif
   mbedtls_platform_zeroize(key_.data(), key_.size());
   worker_stopped_.store(true);
   vTaskDelete(nullptr);
@@ -614,6 +635,18 @@ void AssistLiveComponent::on_shutdown() {
   if (worker_stopped_.load())
     mbedtls_platform_zeroize(key_.data(), key_.size());
 }
+
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+void AssistLiveComponent::loop() {
+#ifdef USE_ASSIST_LIVE_PRE_ROLL
+  TurnDiagnostics turn;
+  if (pre_roll_ != nullptr && pre_roll_->take_diagnostics(turn))
+    diagnostics_.publish_turn(turn);
+#endif
+  diagnostics_.loop(monotonic_ms(), {sent_.load(), confirmed_.load(), dropped_.load(),
+                    refused_.load(), initialization_failures_.load(), 0}, connected_.load());
+}
+#endif
 
 void AssistLiveComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Assist Live timing: %s",

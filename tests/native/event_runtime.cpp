@@ -5,8 +5,22 @@
 #include <cassert>
 #include <iostream>
 #include <thread>
+#include <type_traits>
 
 using namespace esphome::assist_live;
+template<typename T, typename = void> struct HasSenderDiagnostics : std::false_type {};
+template<typename T> struct HasSenderDiagnostics<T, std::void_t<
+    decltype(std::declval<T>().events_sent()), decltype(std::declval<T>().events_confirmed()),
+    decltype(std::declval<T>().connected())>> : std::true_type {};
+template<typename T> static void check_sender_diagnostics(T &sender, uint32_t sent, uint32_t confirmed, bool connected) {
+  if constexpr (HasSenderDiagnostics<T>::value) {
+    assert(sender.events_sent() == sent && "sent counts successful event writes only");
+    assert(sender.events_confirmed() == confirmed && "confirmed counts matching pongs only");
+    assert(sender.connected() == connected && "connected reflects WebSocket state only");
+  } else {
+    assert(false && "sender diagnostics must distinguish writes from confirmations");
+  }
+}
 class Resolver : public AddressResolver {
 public:
   int calls{0};
@@ -84,6 +98,7 @@ int main() {
   EventSender *sender = &udp;
   const std::string packet = "{\"version\":1,\"tag\":\"public-test-tag\"}";
   assert(sender->send(packet));
+  check_sender_diagnostics(*sender, 1, 0, false);
   char datagram[256];
   int received = recv(receiver, datagram, sizeof(datagram), MSG_DONTWAIT);
   assert(received == static_cast<int>(packet.size()) &&
@@ -110,8 +125,10 @@ int main() {
   test_connect_result = 0;
   assert(sender->send(packet) && test_ws_packet == packet &&
          ws_resolver.calls == 1);
+  check_sender_diagnostics(*sender, 1, 1, true);
   test_write_success = false;
   assert(!sender->send(packet));
+  check_sender_diagnostics(*sender, 1, 1, false);
   test_write_success = true;
   assert(!sender->send(packet) && ws_resolver.calls == 1);
   test_time_us += 5000000;
@@ -290,6 +307,18 @@ int main() {
   auto dns_before = test_dns_calls;
   invalid.drain_worker();
   assert(invalid.dropped_events() == 8 && test_dns_calls == dns_before);
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+  {
+    esphome::sensor::Sensor dropped, sent;
+    invalid.set_counter_sensor(EVENTS_DROPPED, &dropped);
+    invalid.set_counter_sensor(EVENTS_SENT, &sent);
+    test_publish_allowed = true;
+    invalid.loop();
+    test_publish_allowed = false;
+    assert(dropped.states.back() == 8 && sent.states.back() == 0 &&
+           "invalid events appear as drops not successful writes");
+  }
+#endif
   assert(valid_event_data("{\"a\":\"é\",\"b\":[null,true,2],\"z\":1}"));
   assert(!valid_event_data("{\"a\":\"\xc0\xaf\"}"));
   assert(valid_event_data("{\"n\":-9223372036854775808}"));
@@ -362,13 +391,16 @@ int main() {
     WebSocketSender waiting(pending_endpoint);
     test_auto_pong = false;
     assert(!waiting.send(packet) && waiting.pending());
+    check_sender_diagnostics(waiting, 1, 0, true);
     test_frames.push_back({10, "mismatch"});
     assert(!waiting.poll() && waiting.pending());
+    check_sender_diagnostics(waiting, 1, 0, true);
     test_frames.push_back({9, "server-ping"});
     assert(!waiting.poll() && waiting.pending());
     assert(test_last_pong == "server-ping");
     test_time_us += 1000000;
     assert(!waiting.poll() && !waiting.pending());
+    check_sender_diagnostics(waiting, 1, 0, false);
     test_auto_pong = true;
   }
   for (bool close_pending : {false, true}) {
@@ -391,6 +423,22 @@ int main() {
     pending.drain_worker();
     assert(pending.dropped_events() == 1 && test_text_writes == writes + 1);
     assert(pending.refused_events() == (close_pending ? 1 : 0));
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+    esphome::sensor::Sensor sent, confirmed, dropped, refused;
+    esphome::binary_sensor::BinarySensor connected;
+    pending.set_counter_sensor(EVENTS_SENT, &sent);
+    pending.set_counter_sensor(EVENTS_CONFIRMED, &confirmed);
+    pending.set_counter_sensor(EVENTS_DROPPED, &dropped);
+    pending.set_counter_sensor(EVENTS_REFUSED, &refused);
+    pending.set_connected_sensor(&connected);
+    assert(sent.states.empty() && "worker never publishes entities");
+    test_publish_allowed = true;
+    pending.loop();
+    test_publish_allowed = false;
+    assert(sent.states.back() == 1 && confirmed.states.back() == 0 &&
+           dropped.states.back() == 1 && refused.states.back() == (close_pending ? 1 : 0) &&
+           !connected.states.back() && "worker counters reach main-loop entities without false confirmation");
+#endif
     pending.dump_config();
     test_auto_pong = true;
   }

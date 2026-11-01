@@ -140,6 +140,7 @@ def run_cpp_runtime() -> str:
             executable = str(Path(directory) / ("websocket" if websocket else "udp"))
             command = [
                 compiler(),
+                "-DUSE_ASSIST_LIVE_DIAGNOSTICS",
                 "-std=c++20",
                 "-pthread",
                 "-Wall",

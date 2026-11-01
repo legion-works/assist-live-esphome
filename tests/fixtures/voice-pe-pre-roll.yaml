@@ -3,3 +3,34 @@
 packages:
   telemetry: !include voice-pe.yaml
   history: !include ../../examples/pre-roll.yaml
+
+assist_live:
+  diagnostics:
+    pre_roll_ms:
+      name: "Pre-roll sent"
+    replay_gate_delay_ms:
+      name: "Replay gate delay"
+    history_trimmed_ms:
+      name: "History trimmed"
+    overflows:
+      name: "Turn queue overflows"
+    dropped_ms:
+      name: "Turn audio dropped"
+    first_live_queue_ms:
+      name: "First live queue delay"
+    history_end_queue_ms:
+      name: "History end queue delay"
+    turn_end_queue_ms:
+      name: "Turn end queue delay"
+    passthrough_reached:
+      name: "Turn pass-through reached"
+    expired_gates:
+      name: "Expired replay gates"
+    events_sent:
+      name: "Timing events sent"
+    events_dropped:
+      name: "Timing events dropped"
+    events_refused:
+      name: "Timing events refused"
+    sender_initialization_failures:
+      name: "Sender initialization failures"

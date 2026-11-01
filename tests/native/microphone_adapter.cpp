@@ -74,6 +74,23 @@ template<typename T> static void retained_source_lifecycle() {
     mic.setup();
     parent.set_pre_roll(&mic);
     parent.setup();
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+    sensor::Sensor history_sensor, gate_sensor, sent_sensor, expired_sensor;
+    binary_sensor::BinarySensor passthrough_sensor, connected_sensor;
+    parent.set_turn_sensor(PRE_ROLL_MS, &history_sensor);
+    parent.set_turn_sensor(REPLAY_GATE_DELAY_MS, &gate_sensor);
+    parent.set_counter_sensor(EVENTS_SENT, &sent_sensor);
+    parent.set_counter_sensor(EXPIRED_GATES, &expired_sensor);
+    parent.set_passthrough_sensor(&passthrough_sensor);
+    parent.set_connected_sensor(&connected_sensor);
+    auto publish = [&]() {
+      test_publish_allowed = true;
+      parent.loop();
+      test_publish_allowed = false;
+    };
+    publish();
+    assert(history_sensor.states.empty() && "no turn entity before a completed turn");
+#endif
     microphone::MicrophoneSource left(&mic, 32, 1, false), right(&mic, 32, 1, false);
     left.add_channel(0);
     right.add_channel(1);
@@ -146,6 +163,14 @@ template<typename T> static void retained_source_lifecycle() {
       }
       mic.finish_turn();
       mic.finish_turn();
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+      assert(history_sensor.states.size() == static_cast<size_t>(turn) && "finish snapshots without publishing");
+      publish();
+      publish();
+      assert(history_sensor.states.size() == static_cast<size_t>(turn + 1) &&
+             history_sensor.states.back() == 32 && "one fresh entity snapshot per completed turn");
+      assert(gate_sensor.states.back() == (turn == 0 ? 20 : 21) && "replay gate entity has turn-local delay");
+#endif
       assert(mic.queued_frames() == 0 && "turn end discards residual queue");
       assert(mic.listeners() == 2 && "logical finish preserves stock source pairing");
     }
@@ -163,6 +188,16 @@ template<typename T> static void retained_source_lifecycle() {
     feed(4000);
     assert(received_left.front() == 4000 * 64 && "follow-up passes live audio directly");
     mic.finish_turn();
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+    publish();
+    assert(history_sensor.states.back() == 0 && "follow-up entity reports zero history");
+    const auto counter_updates = sent_sensor.states.size();
+    publish();
+    assert(sent_sensor.states.size() == counter_updates && "counter entities rate limit same-millisecond loops");
+    advance_time(1000);
+    publish();
+    assert(sent_sensor.states.size() == counter_updates + 1 && "counter entities update at one-second boundary");
+#endif
     va.running = false;
     feed(5000);
     advance_time(100);

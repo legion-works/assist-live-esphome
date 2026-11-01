@@ -132,7 +132,8 @@ def test_native_pre_roll_history_and_pacing(tmp_path):
     assert run([executable]) == "PASS pre-roll\n"
 
 
-def test_native_microphone_adapter_callback_allocations(tmp_path):
+@pytest.mark.parametrize("diagnostics", [False, True])
+def test_native_microphone_adapter_callback_allocations(tmp_path, diagnostics):
     from importlib import resources
 
     from tests.event_vectors import COMPONENT, compiler, native_json_include, run
@@ -168,37 +169,38 @@ def test_native_microphone_adapter_callback_allocations(tmp_path):
         + "\n#define ESP_LOGD ESP_LOGCONFIG\n#define ESP_LOGE ESP_LOGCONFIG\n"
     )
     executable = str(tmp_path / "microphone_adapter")
-    run(
-        [
-            compiler(),
-            "-std=c++17",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-pthread",
-            "-DUSE_ASSIST_LIVE_PRE_ROLL",
-            "-I",
-            str(include),
-            "-I",
-            str(ROOT / "tests/native"),
-            "-I",
-            str(ROOT / "tests/native/include"),
-            "-I",
-            native_json_include().name,
-            "-I",
-            str(COMPONENT),
-            str(ROOT / "tests/native/microphone_adapter.cpp"),
-            str(COMPONENT / "event_codec.cpp"),
-            str(COMPONENT / "assist_live.cpp"),
-            str(
-                resources.files("esphome").joinpath(
-                    "components/microphone/microphone_source.cpp"
-                )
-            ),
-            "-o",
-            executable,
-        ]
-    )
+    command = [
+        compiler(),
+        "-std=c++17",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-DUSE_ASSIST_LIVE_PRE_ROLL",
+        "-I",
+        str(include),
+        "-I",
+        str(ROOT / "tests/native"),
+        "-I",
+        str(ROOT / "tests/native/include"),
+        "-I",
+        native_json_include().name,
+        "-I",
+        str(COMPONENT),
+        str(ROOT / "tests/native/microphone_adapter.cpp"),
+        str(COMPONENT / "event_codec.cpp"),
+        str(COMPONENT / "assist_live.cpp"),
+        str(
+            resources.files("esphome").joinpath(
+                "components/microphone/microphone_source.cpp"
+            )
+        ),
+        "-o",
+        executable,
+    ]
+    if diagnostics:
+        command.insert(1, "-DUSE_ASSIST_LIVE_DIAGNOSTICS")
+    run(command)
     output = run([executable])
     assert "PASS microphone adapter" in output
     lifecycle = output.split("BEGIN retained-source lifecycle\n", 1)[1].split(

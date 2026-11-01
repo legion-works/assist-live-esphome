@@ -29,6 +29,11 @@
 | `tools/check_bootstrap.py` | Source, package, license, and privacy checks |
 | `docs/verification.md` | Test commands, results, and source URLs |
 | `docs/protocol.md` | Server-contract URL, credential rules, and firmware signal limits |
+| `docs/diagnostics.md` | Optional device entities, units, counters, and publication limits |
+| `components/assist_live/diagnostic_state.h` | Completed-turn snapshot and counter publication schedule |
+| `components/assist_live/diagnostic_publisher.h` | Public sensor and binary-sensor publication |
+| `tests/test_diagnostics.py` | Native and resolved-config diagnostic checks |
+| `tests/native/diagnostics.cpp` | Snapshot, unknown-value, and rate-limit assertions |
 | `pyproject.toml` | Python requirements and development dependencies |
 | `uv.lock` | Locked Python dependency versions |
 | `LICENSE` | Full GPL version 3 text |

@@ -6,6 +6,9 @@
 #include "esphome/components/switch/switch.h"
 #include "esphome/core/component.h"
 #include "pre_roll_buffer.h"
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+#include "diagnostic_state.h"
+#endif
 #include <memory>
 
 namespace esphome::assist_live {
@@ -37,9 +40,16 @@ public:
   void clear();
   bool history_complete();
   uint32_t pre_roll_ms();
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+  bool take_diagnostics(TurnDiagnostics &turn) {
+    LockGuard lock(mutex_);
+    return diagnostics_.take_turn(turn);
+  }
+#endif
 
 protected:
   void receive_(const std::vector<uint8_t> &data);
+  void push_frames_(const std::vector<uint8_t> &data);
   void update_mute_();
   void log_turn_();
   microphone::Microphone *source_{nullptr};
@@ -58,6 +68,9 @@ protected:
   bool arm_pending_{false}, arm_expired_{false};
   bool turn_active_{false}, wake_bound_{false}, replay_started_{false};
   bool privacy_mute_{false}, effective_mute_{false}, passthrough_{false};
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+  DiagnosticState diagnostics_;
+#endif
 };
 }
 #endif

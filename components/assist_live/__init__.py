@@ -6,11 +6,32 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 import esphome.final_validate as fv
 from esphome import automation, yaml_util
-from esphome.components import audio, esp32, media_player, microphone, switch
-from esphome.const import CONF_ID
+from esphome.components import (
+    audio,
+    binary_sensor,
+    esp32,
+    media_player,
+    microphone,
+    sensor,
+    switch,
+)
+from esphome.const import (
+    CONF_FORCE_UPDATE,
+    CONF_ID,
+    DEVICE_CLASS_CONNECTIVITY,
+    ENTITY_CATEGORY_DIAGNOSTIC,
+    STATE_CLASS_MEASUREMENT,
+    STATE_CLASS_TOTAL_INCREASING,
+    UNIT_MILLISECOND,
+)
 from esphome.core import ID, Lambda
 
-AUTO_LOAD = ["json"]
+
+def AUTO_LOAD(config):
+    return (
+        ["json", "sensor", "binary_sensor"] if config.get("diagnostics") else ["json"]
+    )
+
 
 assist_live_ns = cg.esphome_ns.namespace("assist_live")
 AssistLiveComponent = assist_live_ns.class_("AssistLiveComponent", cg.Component)
@@ -130,6 +151,64 @@ PRE_ROLL_SCHEMA = cv.All(
     pre_roll_stream_limits,
 )
 
+TURN_DIAGNOSTICS = (
+    "pre_roll_ms",
+    "replay_gate_delay_ms",
+    "history_trimmed_ms",
+    "overflows",
+    "dropped_ms",
+    "first_live_queue_ms",
+    "history_end_queue_ms",
+    "turn_end_queue_ms",
+)
+COUNTER_DIAGNOSTICS = (
+    "events_sent",
+    "events_confirmed",
+    "events_dropped",
+    "events_refused",
+    "sender_initialization_failures",
+    "expired_gates",
+)
+DIAGNOSTIC_SCHEMA = cv.Schema(
+    {
+        **{
+            cv.Optional(key): sensor.sensor_schema(
+                accuracy_decimals=0,
+                unit_of_measurement=UNIT_MILLISECOND if key.endswith("_ms") else "",
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ).extend({cv.Optional(CONF_FORCE_UPDATE, default=True): cv.boolean})
+            for key in TURN_DIAGNOSTICS
+        },
+        **{
+            cv.Optional(key): sensor.sensor_schema(
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_TOTAL_INCREASING,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            )
+            for key in COUNTER_DIAGNOSTICS
+        },
+        cv.Optional("passthrough_reached"): binary_sensor.binary_sensor_schema(
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional("connected"): binary_sensor.binary_sensor_schema(
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            device_class=DEVICE_CLASS_CONNECTIVITY,
+        ),
+    }
+)
+
+
+def validate_diagnostics(config):
+    diagnostics = config.get("diagnostics", {})
+    for key in ("connected", "events_confirmed"):
+        if key in diagnostics and config["transport"] != "websocket":
+            raise cv.Invalid(f"diagnostics.{key} requires websocket transport")
+    for key in (*TURN_DIAGNOSTICS, "passthrough_reached", "expired_gates"):
+        if key in diagnostics and "pre_roll" not in config:
+            raise cv.Invalid(f"diagnostics.{key} requires pre_roll")
+    return config
+
 
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
@@ -142,10 +221,12 @@ CONFIG_SCHEMA = cv.All(
             cv.Required("media_player_id"): cv.use_id(media_player.MediaPlayer),
             cv.Optional("port", default=8765): cv.port,
             cv.Optional("pre_roll"): PRE_ROLL_SCHEMA,
+            cv.Optional("diagnostics"): DIAGNOSTIC_SCHEMA,
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
     cv.only_with_framework("esp-idf"),
+    validate_diagnostics,
 )
 
 
@@ -206,6 +287,23 @@ async def to_code(config):
     cg.add(component.set_server(config["server"]))
     cg.add(component.set_port(config["port"]))
     cg.add(component.set_websocket(config["transport"] == "websocket"))
+    if diagnostics := config.get("diagnostics"):
+        cg.add_define("USE_ASSIST_LIVE_DIAGNOSTICS")
+        for keys, setter in (
+            (TURN_DIAGNOSTICS, component.set_turn_sensor),
+            (COUNTER_DIAGNOSTICS, component.set_counter_sensor),
+        ):
+            for index, key in enumerate(keys):
+                if key in diagnostics:
+                    entity = await sensor.new_sensor(diagnostics[key])
+                    cg.add(setter(index, entity))
+        for key, setter in (
+            ("passthrough_reached", component.set_passthrough_sensor),
+            ("connected", component.set_connected_sensor),
+        ):
+            if key in diagnostics:
+                entity = await binary_sensor.new_binary_sensor(diagnostics[key])
+                cg.add(setter(entity))
     if "pre_roll" in config:
         cg.add_define("USE_ASSIST_LIVE_PRE_ROLL")
         pre_roll = config["pre_roll"]

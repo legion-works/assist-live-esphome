@@ -50,14 +50,8 @@ void PreRollMicrophone::receive_(const std::vector<uint8_t> &data) {
     return;
   update_mute_();
   const bool idle = !turn_active_ && !arm_pending_;
-  if (idle && !effective_mute_) {
-    for (size_t offset = 0; offset + sizeof(StereoFrame) <= data.size();
-         offset += sizeof(StereoFrame)) {
-      StereoFrame frame;
-      std::memcpy(&frame, data.data() + offset, sizeof(frame));
-      buffer_->push(&frame, 1);
-    }
-  }
+  if (idle && !effective_mute_)
+    push_frames_(data);
   if (listeners_ != 0 && !arm_pending_ && !wake_bound_ &&
       (idle || passthrough_ || effective_mute_)) {
     if (turn_active_)
@@ -78,8 +72,12 @@ void PreRollMicrophone::receive_(const std::vector<uint8_t> &data) {
     // The stock I2S source delivers whole stereo frames.
     return;
   }
+  push_frames_(data);
+}
+
+void PreRollMicrophone::push_frames_(const std::vector<uint8_t> &data) {
   // memcpy does not require the physical byte vector to have int32 alignment.
-  for (size_t offset = 0; offset < data.size(); offset += sizeof(StereoFrame)) {
+  for (size_t offset = 0; offset + sizeof(StereoFrame) <= data.size(); offset += sizeof(StereoFrame)) {
     StereoFrame frame;
     std::memcpy(&frame, data.data() + offset, sizeof(frame));
     buffer_->push(&frame, 1);
@@ -243,6 +241,9 @@ void PreRollMicrophone::finish_turn() {
       return;
     last_pre_roll_ms_ = replay_started_ ? buffer_->pre_roll_ms() : 0;
     log_turn_();
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+    diagnostics_.finish_turn(*buffer_, arm_to_start_ms_, arm_expired_, replay_started_);
+#endif
     buffer_->reset_turn();
     turn_active_ = wake_bound_ = replay_started_ = arm_pending_ = passthrough_ = false;
     fast_loop_.stop();

@@ -5,6 +5,7 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "event_codec.h"
+#include "diagnostic_publisher.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "mbedtls/platform_util.h"
@@ -20,6 +21,13 @@ class PreRollMicrophone;
 class AssistLiveComponent : public Component {
 public:
   void setup() override;
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+  void loop() override;
+  void set_turn_sensor(size_t index, sensor::Sensor *value) { diagnostics_.set_turn_sensor(index, value); }
+  void set_counter_sensor(size_t index, sensor::Sensor *value) { diagnostics_.set_counter_sensor(index, value); }
+  void set_passthrough_sensor(binary_sensor::BinarySensor *value) { diagnostics_.set_passthrough(value); }
+  void set_connected_sensor(binary_sensor::BinarySensor *value) { diagnostics_.set_connected(value); }
+#endif
   void dump_config() override;
   void on_shutdown() override;
   bool teardown() override { return worker_stopped_.load(); }
@@ -68,6 +76,11 @@ protected:
   std::atomic<uint32_t> dropped_{0};
   std::atomic<uint32_t> initialization_failures_{0};
   std::atomic<uint32_t> refused_{0};
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+  std::atomic<uint32_t> sent_{0}, confirmed_{0};
+  std::atomic<bool> connected_{false};
+  DiagnosticPublisher diagnostics_;
+#endif
   media_player::MediaPlayer *player_{nullptr};
 #ifdef USE_ASSIST_LIVE_PRE_ROLL
   PreRollMicrophone *pre_roll_{nullptr};
