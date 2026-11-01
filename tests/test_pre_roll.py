@@ -40,9 +40,9 @@ def validate(config):
         CORE.reset()
 
 
-def test_optional_pre_roll_accepts_physical_stereo_source_and_provisional_length():
+def test_optional_pre_roll_accepts_physical_stereo_source_and_measured_default_length():
     result = validate(component_config())
-    assert result["pre_roll"]["length_ms"] == 250
+    assert result["pre_roll"]["length_ms"] == 200
 
 
 @pytest.mark.parametrize("length", [0, -1, 1001])

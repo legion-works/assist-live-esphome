@@ -2111,3 +2111,21 @@ An isolated configuration enables feedback with a local `voice_assistant` overri
 This override is not a repository or CI dependency.
 Each compile must give `new_warnings=0` for the component.
 No device access, flash, or upload is part of these checks.
+
+## Measured default history length
+
+The default `pre_roll.length_ms` changes from 250 ms to 200 ms.
+The example overlay and `docs/pre-roll.md` use the same value.
+A test makes sure that the schema default is 200 ms.
+
+Device test results with one speaker, with beam search for the server `final` transcript:
+
+- With 450 ms of history, 9 of 11 transcripts started with more words from the end of the wake word.
+- An offline crop of 22 recorded turns gave clean transcripts with 266 ms of history or less.
+  The first command word stayed in all turns with 91 ms of history or more.
+- With 200 ms, the device sent 216 to 232 ms of history in each turn.
+  All 13 turns gave the clean command.
+  Three of these turns had no pause after the wake word.
+
+Other speakers can make a different value necessary.
+The checks are the repository unit tests, the configuration and compile targets of `task check`, and STE on the changed documents.

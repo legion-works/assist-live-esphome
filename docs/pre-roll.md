@@ -17,7 +17,7 @@ assist_live:
   pre_roll:
     id: pre_roll_mic
     microphone: i2s_mics
-    length_ms: 250
+    length_ms: 200
     wake_sound: wake_sound
     buffer_feedback: false
 ```
@@ -25,8 +25,12 @@ assist_live:
 `microphone` identifies the physical source: 16 kHz, 32-bit stereo PCM.
 `wake_sound` identifies the stock wake-sound switch. This ID is mandatory.
 `length_ms` must be an integer from 1 through 1000.
-Its provisional default is 250 ms, a small initial interval for device calibration, not a measured wake-word interval.
 The default configuration has no `pre_roll` section.
+
+The default `length_ms` is 200 ms. A device test measured this value with one speaker.
+With 200 ms, 13 of 13 wake-word turns kept the first command word and had no words from the end of the wake word.
+With 450 ms, the end of the wake word became more words at the start of the transcript.
+Other speakers can make a different value necessary.
 
 `buffer_feedback` defaults to `false` and keeps the time-based replay estimate.
 Set it to `true` only with an ESPHome version that supplies `VoiceAssistant::get_microphone_buffer_free()`.
@@ -193,7 +197,7 @@ Measure these intervals in the device test, especially with history above 256 ms
 
 At 16 kHz, 32-bit stereo, one second of history costs 128000 PCM bytes.
 The one-second queue margin makes the maximum queue allocation 256000 bytes.
-The 250 ms setting uses 160000 PCM bytes.
+The 200 ms setting uses 153600 PCM bytes.
 The ESPHome `RAMAllocator` prefers PSRAM and falls back to internal RAM.
 There is also a 2048-byte output-vector reserve, a 2048-byte loop stack buffer, and small state objects.
 

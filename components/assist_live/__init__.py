@@ -145,7 +145,7 @@ PRE_ROLL_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(PreRollMicrophone),
             cv.Required("microphone"): cv.use_id(microphone.Microphone),
             cv.Required("wake_sound"): cv.use_id(switch.Switch),
-            cv.Optional("length_ms", default=250): cv.int_range(min=1, max=1000),
+            cv.Optional("length_ms", default=200): cv.int_range(min=1, max=1000),
             cv.Optional("buffer_feedback", default=False): cv.boolean,
         }
     ).extend(cv.COMPONENT_SCHEMA),

@@ -4,7 +4,7 @@ assist_live:
   pre_roll:
     id: pre_roll_mic
     microphone: i2s_mics
-    length_ms: 250
+    length_ms: 200
     wake_sound: wake_sound
 
 substitutions:
