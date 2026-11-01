@@ -12,6 +12,8 @@ public:
   // Keep replay backlog bounded. See the public design record:
   // https://github.com/legion-works/assist-live/blob/main/docs/design.md
   static constexpr uint32_t MAX_EXTRA_BACKLOG_MS = 256;
+  // VA makes and clears the two new-turn rings before STT start.
+  static constexpr uint64_t MAX_ARM_TO_START_MS = 1000;
   PreRollBuffer(StereoFrame *memory, size_t history, size_t capacity,
                 uint32_t sample_rate = 16000)
       : memory_(memory), history_(history), capacity_(capacity), rate_(sample_rate) {}
@@ -46,7 +48,7 @@ public:
   }
 
   void start(uint64_t now, bool wake_sound) {
-    if (!armed_ || wake_sound || muted_ || now - detection_ms_ > 1000) {
+    if (!armed_ || wake_sound || muted_ || now - detection_ms_ > MAX_ARM_TO_START_MS) {
       read_ = write_;
       detection_ms_ = 0;
       dropped_ = dropped_history_ = overflows_ = trimmed_ = 0;
@@ -88,14 +90,31 @@ public:
   }
 
   size_t pop(uint64_t now, bool ready, StereoFrame *out, size_t maximum) {
+    return pop_(now, ready, out, maximum, false, 0);
+  }
+
+  size_t pop_with_buffer_free(uint64_t now, bool ready, StereoFrame *out, size_t maximum,
+                              size_t free_frames) {
+    return pop_(now, ready, out, maximum, true, free_frames);
+  }
+
+private:
+  size_t pop_(uint64_t now, bool ready, StereoFrame *out, size_t maximum,
+              bool feedback, size_t free_frames) {
     if (!active_ || !listening_ || !ready || muted_ || now < next_ms_)
       return 0;
-    // VA has 512 ms rings. At most 256 ms is extra backlog over 1x live audio.
-    const uint64_t credit = (now - start_ms_ + MAX_EXTRA_BACKLOG_MS) * rate_ / 1000;
-    if (handed_ >= credit)
-      return 0;
-    const size_t count = std::min<uint64_t>(
-        std::min({pending(), maximum, block_frames()}), credit - handed_);
+    size_t count = std::min({pending(), maximum, block_frames()});
+    if (feedback) {
+      const size_t reserve = MAX_EXTRA_BACKLOG_MS * rate_ / 1000;
+      if (free_frames < reserve + count)
+        return 0;
+    } else {
+      // VA has 512 ms rings. At most 256 ms is extra backlog over 1x live audio.
+      const uint64_t credit = (now - start_ms_ + MAX_EXTRA_BACKLOG_MS) * rate_ / 1000;
+      if (handed_ >= credit)
+        return 0;
+      count = std::min<uint64_t>(count, credit - handed_);
+    }
     if (count == 0)
       return 0;
     const size_t historical = std::min<uint64_t>(count, history_remaining());
@@ -114,6 +133,7 @@ public:
     return count;
   }
 
+public:
   void account_passthrough(size_t frames) {
     live_sent_ += frames;
     handed_ += frames;

@@ -149,7 +149,7 @@ void PreRollMicrophone::listening() {
   update_mute_();
   const uint64_t now = AssistLiveComponent::monotonic_ms();
   arm_to_start_ms_ = now - arm_ms_;
-  arm_expired_ = arm_expired_ || arm_to_start_ms_ > MAX_ARM_TO_START_MS;
+  arm_expired_ = arm_expired_ || arm_to_start_ms_ > PreRollBuffer::MAX_ARM_TO_START_MS;
   buffer_->start(now, wake_sound_->state || arm_expired_);
   buffer_->listen();
   wake_bound_ = false;
@@ -173,14 +173,21 @@ void PreRollMicrophone::loop() {
       return;
     update_mute_();
     if (wake_bound_ && !arm_expired_ &&
-        AssistLiveComponent::monotonic_ms() - arm_ms_ > MAX_ARM_TO_START_MS) {
+        AssistLiveComponent::monotonic_ms() - arm_ms_ > PreRollBuffer::MAX_ARM_TO_START_MS) {
       arm_expired_ = true;
       buffer_->reset_turn();
     }
     if (listeners_ != 0 && source_->is_running())
       state_ = microphone::STATE_RUNNING;
     StereoFrame frames[256];
+#ifdef USE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK
+    // Final validation fixes each VA channel at 16-bit mono.
+    const size_t free_frames = va == nullptr ? 0 : va->get_microphone_buffer_free() / sizeof(int16_t);
+    const auto count = buffer_->pop_with_buffer_free(AssistLiveComponent::monotonic_ms(), ready, frames, 256,
+                                                    free_frames);
+#else
     const auto count = buffer_->pop(AssistLiveComponent::monotonic_ms(), ready, frames, 256);
+#endif
     if (count != 0) {
       output_.resize(count * sizeof(StereoFrame));
       std::memcpy(output_.data(), frames, output_.size());

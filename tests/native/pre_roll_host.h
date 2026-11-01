@@ -7,6 +7,7 @@
 #include <memory>
 #include <cstring>
 #include <vector>
+#include <cassert>
 
 namespace esphome {
 template<typename T> T clamp(T value, T low, T high) { return std::min(high, std::max(low, value)); }
@@ -74,6 +75,14 @@ class VoiceAssistant {
 public:
   api::APIConnection *get_api_connection() { return &connection_; }
   bool is_running() const { return running; }
+  size_t get_microphone_buffer_free() const {
+    assert(!in_audio_callback && "feedback is read only from the main loop");
+    ++free_reads;
+    return free_bytes;
+  }
+  size_t free_bytes{16384};
+  mutable size_t free_reads{0};
+  bool in_audio_callback{false};
   bool running{false};
 private:
   api::APIConnection connection_;

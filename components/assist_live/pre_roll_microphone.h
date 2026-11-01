@@ -16,8 +16,6 @@ class AssistLiveComponent;
 
 class PreRollMicrophone : public Component, public microphone::Microphone {
 public:
-  // VA makes and clears the two new-turn rings before STT start.
-  static constexpr uint64_t MAX_ARM_TO_START_MS = 1000;
   void setup() override;
   void loop() override;
   void dump_config() override;

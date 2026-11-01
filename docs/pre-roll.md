@@ -19,6 +19,7 @@ assist_live:
     microphone: i2s_mics
     length_ms: 250
     wake_sound: wake_sound
+    buffer_feedback: false
 ```
 
 `microphone` identifies the physical source: 16 kHz, 32-bit stereo PCM.
@@ -26,6 +27,15 @@ assist_live:
 `length_ms` must be an integer from 1 through 1000.
 Its provisional default is 250 ms, a small initial interval for device calibration, not a measured wake-word interval.
 The default configuration has no `pre_roll` section.
+
+`buffer_feedback` defaults to `false` and keeps the time-based replay estimate.
+Set it to `true` only with an ESPHome version that supplies `VoiceAssistant::get_microphone_buffer_free()`.
+An `external_components` override of `voice_assistant` can also supply this public interface.
+Stock ESPHome 2026.10.0 does not supply it.
+The option adds `USE_VOICE_ASSISTANT_MICROPHONE_BUFFER_STATE` to enable the interface.
+
+The pinned Python configuration interface cannot find this C++ getter.
+Without the getter, C++ compilation stops with a missing-member error for `get_microphone_buffer_free`.
 
 The component sets only the `voice_assistant.microphone` ID values during `FINAL_VALIDATE_SCHEMA`.
 The stock two-source configuration is mandatory: physical `channels` 0 and 1, 16-bit output, and `gain_factor` 1.
@@ -122,10 +132,10 @@ History stays in RAM. It does not go to flash or an `idle` network stream.
 The public `on_listening` signal enables replay after HA starts STT.
 Replay sends a maximum of 16 ms of stereo frames for each operation, at a maximum rate of 2x.
 The public API connection must report write readiness.
-The component also limits the estimated increase in backlog to 256 ms:
+With `buffer_feedback: false`, the component also limits the estimated increase in backlog to 256 ms:
 
 ```text
-frames handed to VA <= 16 * (elapsed_ms_since_VA_microphone_start + 256)
+frames handed to VA <= 16 * (elapsed_ms_since_replay_start + 256)
 ```
 
 The formula uses only 1x VA drain, the rate necessary for live audio.
@@ -133,14 +143,25 @@ The stock rings each hold 512 ms. The estimated increase in backlog is 256 ms or
 With history above 256 ms, this limit can keep some live audio in the component queue until turn end.
 When the queue becomes empty, live callbacks go directly to VA, as in the stock path.
 
+With `buffer_feedback: true`, the main loop reads the minimum free bytes across the configured VA microphone rings.
+It reads this value one time for each admission decision, not from the audio callback.
+Each VA buffer holds 16-bit samples at 16 kHz.
+The component sends an audio unit only with 8192 free bytes plus the bytes for that unit in each buffer.
+Thus, each ring keeps a minimum of 256 ms of free space after admission.
+The 2x rate limit and API connection-readiness check stay unchanged.
+
+The component does not use elapsed-time credit with this option.
+With fast VA drain, replay gets to pass-through near one history interval after the gate.
+This is a native model result, not a measured device result.
+
 The queue holds the configured interval plus 1000 ms.
 A long stall drops the oldest full 16 ms units and increments the overflow and dropped-frame counters.
 Dropped history does not contribute to `pre_roll_ms`.
 A satisfactory device test must have 0 queue overflows and 0 dropped frames.
 
-No public API reports accurate VA ring occupancy or gives a record of each audio-consumption operation.
-The estimate is not proof that a stock ring cannot overflow during a network stall.
-A future upstream public space or consumption callback can remove that uncertainty.
+Stock ESPHome 2026.10.0 has no public interface for VA ring occupancy.
+The fallback estimate is not proof that a stock ring cannot overflow during a network stall.
+The opt-in public interface supplies free space, not a record of each audio-consumption operation.
 The component does not access `protected` VA members.
 
 ## Events, logs, and RAM

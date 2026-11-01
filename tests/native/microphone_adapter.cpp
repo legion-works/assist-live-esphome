@@ -320,7 +320,102 @@ static void start_eligibility_is_bounded_and_chime_cannot_arm() {
   voice_assistant::global_voice_assistant = nullptr;
 }
 
+#ifdef USE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK
+static void feedback_drain_model(int drain_mode) {
+  PhysicalMicrophone physical;
+  switch_::Switch wake_sound;
+  AssistLiveComponent parent;
+  voice_assistant::VoiceAssistant va;
+  voice_assistant::global_voice_assistant = &va;
+  TestMicrophone mic;
+  mic.set_source(&physical);
+  mic.set_wake_sound(&wake_sound);
+  mic.set_parent(&parent);
+  mic.set_length_ms(512);
+  mic.setup();
+  std::vector<int32_t> received;
+  size_t used = 0;
+  mic.add_data_callback([&](const auto &data) {
+    used += data.size() / 4;
+    assert(used <= 8192 && "feedback preserves 256 ms per-channel reserve");
+    for (size_t offset = 0; offset < data.size(); offset += sizeof(StereoFrame)) {
+      StereoFrame frame;
+      std::memcpy(&frame, data.data() + offset, sizeof(frame));
+      assert(frame.right == -frame.left && "feedback stereo alignment");
+      received.push_back(frame.left);
+    }
+  });
+  int next = 0;
+  auto feed = [&](size_t count) {
+    std::vector<uint8_t> data(count * sizeof(StereoFrame));
+    for (size_t i = 0; i < count; ++i) {
+      StereoFrame frame{next, -next};
+      ++next;
+      std::memcpy(data.data() + i * sizeof(frame), &frame, sizeof(frame));
+    }
+    const auto reads = va.free_reads;
+    va.in_audio_callback = true;
+    physical.send(data);
+    va.in_audio_callback = false;
+    assert(va.free_reads == reads && "audio callback never reads buffer feedback");
+  };
+  feed(8192);
+  set_time(1000);
+  mic.wake_detected();
+  va.running = true;
+  mic.wake_started();
+  mic.start();
+  mic.listening();
+  int passthrough_at = -1;
+  size_t stalled_sent = 0;
+  for (int elapsed = 0; elapsed < 1400; ++elapsed) {
+    if (drain_mode == 0 || (drain_mode == 2 && elapsed >= 400))
+      used = 0;
+    else if (drain_mode == 1)
+      used -= std::min(used, size_t{32});
+    if (elapsed != 0)
+      feed(16);
+    va.free_bytes = 16384 - used;
+    set_time(1000 + elapsed);
+    const auto reads = va.free_reads;
+    mic.loop();
+    assert(va.free_reads - reads <= 1 && "one free-space read per main-loop block decision");
+    if (passthrough_at < 0) {
+      assert(received.size() <= static_cast<size_t>(elapsed / 8 + 1) * 256 &&
+             "feedback replay is limited to twice real time");
+      if (mic.queued_frames() == 0)
+        passthrough_at = elapsed;
+    }
+    if (drain_mode == 2 && elapsed == 200)
+      stalled_sent = received.size();
+    if (drain_mode == 2 && elapsed == 399)
+      assert(received.size() == stalled_sent && stalled_sent == 4096 &&
+             "zero drain stops admission at the reserve without loss");
+  }
+  assert(va.free_reads != 0 && "enabled option uses actual buffer feedback");
+  std::cout << "feedback model=" << drain_mode << " passthrough_ms=" << passthrough_at
+            << " sent=" << received.size() << " queued=" << mic.queued_frames() << std::endl;
+  if (drain_mode == 0)
+    assert(passthrough_at >= 496 && passthrough_at <= 520 &&
+           "ideal drain catches up in one history length instead of fallback credit");
+  if (drain_mode == 2)
+    assert(passthrough_at >= 400 && "stalled replay resumes to pass-through");
+  assert(received.size() + mic.queued_frames() == static_cast<size_t>(next) &&
+         "feedback retains every captured sample");
+  for (size_t i = 0; i < received.size(); ++i)
+    assert(received[i] == static_cast<int32_t>(i) && "feedback resumes without gaps or duplicates");
+  mic.stop();
+  voice_assistant::global_voice_assistant = nullptr;
+}
+#endif
+
 int main() {
+#ifdef USE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK
+  feedback_drain_model(0);
+  feedback_drain_model(1);
+  feedback_drain_model(2);
+  std::cout << "PASS feedback drain models\n";
+#endif
   retained_source_lifecycle<TestMicrophone>();
   muted_receive_does_not_allocate();
   start_eligibility_is_bounded_and_chime_cannot_arm();

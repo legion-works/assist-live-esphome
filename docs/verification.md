@@ -2057,3 +2057,57 @@ git diff --check
 The compile targets are default UDP, default WebSocket, pre-roll, and the two probes.
 Each compile uses CMake `3.30.2` and the `new_warnings=0` requirement.
 No commit, device access, flash, or upload is part of this repair.
+
+## Replay admission with microphone buffer feedback
+
+Record date: `2026-11-01` (UTC).
+
+The optional `pre_roll.buffer_feedback` setting defaults to `false`.
+The default path keeps the elapsed-time credit rule and compiles with stock ESPHome 2026.10.0.
+The public `VoiceAssistant::get_microphone_buffer_free()` interface is necessary for the enabled path.
+The pinned configuration interface cannot find C++ members. A missing getter stops C++ compilation.
+See [microphone history configuration](pre-roll.md#configuration) for the requirement.
+
+The main loop sends each audio unit only with 256 ms of free space plus that unit in each VA buffer.
+The maximum replay rate stays 2x. The API readiness check stays unchanged.
+The buffer and adapter use one arm-expiry constant.
+
+Initial regression command:
+
+```sh
+uv run --locked pytest tests/test_pre_roll.py -k 'adapter or feedback_option' -q --tb=short
+```
+
+The initial adapter stopped at `enabled option uses actual buffer feedback`.
+The initial configuration checks rejected `buffer_feedback` or had no default value.
+The native, fallback, and generated-define checks then gave `8 passed`.
+
+The native model uses the actual adapter, numbered stereo frames, a fake VA, and controlled drain.
+With ideal drain, replay gets to pass-through near one history interval after the gate.
+A stall stops admission before the reserve. Replay resumes without missing or duplicate samples.
+Real-time drain keeps the reserve. The unchanged native buffer tests check the fallback path.
+
+Resolved-config and generated-code tests check the omitted, `false`, and `true` option values.
+
+Four isolated mutations compiled, then stopped at named assertions:
+
+1. Remove the reserve: `feedback preserves 256 ms per-channel reserve`.
+2. Remove the rate limit: `feedback replay is limited to twice real time`.
+3. Read free space in the audio callback: `feedback is read only from the main loop`.
+4. Use fallback credit with the option on: `ideal drain catches up in one history length instead of fallback credit`.
+
+Acceptance commands:
+
+```sh
+ESPHOME_WORK_DIR="$CHECK_TMP" PRIVATE_DENYLIST="$PRIVATE_DENYLIST" task check
+UV_PROJECT_ENVIRONMENT="$CHECK_TMP/venv312" uv run --locked --python 3.12 pytest tests/ -q
+python3 "$STE_CHECKER" docs/pre-roll.md docs/verification.md
+python3 "$PUBLIC_TREE_CHECKER" --root . --private-denylist "$PRIVATE_DENYLIST" --history
+git diff --check
+```
+
+Compile targets include the default transports, pre-roll without feedback, and the two probes on the stock pin.
+An isolated configuration enables feedback with a local `voice_assistant` override that supplies the getter.
+This override is not a repository or CI dependency.
+Each compile must give `new_warnings=0` for the component.
+No device access, flash, or upload is part of these checks.

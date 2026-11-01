@@ -133,7 +133,10 @@ def test_native_pre_roll_history_and_pacing(tmp_path):
 
 
 @pytest.mark.parametrize("diagnostics", [False, True])
-def test_native_microphone_adapter_callback_allocations(tmp_path, diagnostics):
+@pytest.mark.parametrize("feedback", [False, True])
+def test_native_microphone_adapter_callback_allocations(
+    tmp_path, diagnostics, feedback
+):
     from importlib import resources
 
     from tests.event_vectors import COMPONENT, compiler, native_json_include, run
@@ -200,9 +203,16 @@ def test_native_microphone_adapter_callback_allocations(tmp_path, diagnostics):
     ]
     if diagnostics:
         command.insert(1, "-DUSE_ASSIST_LIVE_DIAGNOSTICS")
+    if feedback:
+        command[1:1] = [
+            "-DUSE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK",
+            "-DUSE_VOICE_ASSISTANT_MICROPHONE_BUFFER_STATE",
+        ]
     run(command)
     output = run([executable])
     assert "PASS microphone adapter" in output
+    if feedback:
+        assert "PASS feedback drain models" in output
     lifecycle = output.split("BEGIN retained-source lifecycle\n", 1)[1].split(
         "PASS retained-source lifecycle", 1
     )[0]
@@ -255,6 +265,40 @@ def stock_wake_config(tmp_path):
         (ROOT / "tests/fixtures/secrets.yaml").read_bytes()
     )
     return resolved_config(path, tmp_path)
+
+
+@pytest.mark.parametrize("feedback", [None, False, True])
+def test_resolved_feedback_option_controls_generated_defines(tmp_path, feedback):
+    source = (
+        "packages:\n  history: !include "
+        f"{ROOT / 'tests/fixtures/voice-pe-pre-roll.yaml'}\n"
+    )
+    if feedback is not None:
+        source += (
+            f"assist_live:\n  pre_roll:\n    buffer_feedback: {str(feedback).lower()}\n"
+        )
+    path = tmp_path / "feedback.yaml"
+    path.write_text(source)
+    config = resolved_config(path, tmp_path)
+    assert config["assist_live"]["pre_roll"]["buffer_feedback"] is (feedback is True)
+    result = subprocess.run(
+        [sys.executable, "-m", "esphome", "compile", "--only-generate", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "ESPHOME_BUILD_PATH": str(tmp_path / "build")},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    defines = (
+        tmp_path / "build/assist-live-compile-test/src/esphome/core/defines.h"
+    ).read_text()
+    for name in (
+        "USE_VOICE_ASSISTANT_MICROPHONE_BUFFER_STATE",
+        "USE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK",
+    ):
+        assert (f"#define {name}" in defines) is (feedback is True), (
+            "only the enabled option adds buffer-feedback defines"
+        )
 
 
 def assert_stock_wake_handler(handler, stock_handler, arm):

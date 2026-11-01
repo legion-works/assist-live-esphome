@@ -146,6 +146,7 @@ PRE_ROLL_SCHEMA = cv.All(
             cv.Required("microphone"): cv.use_id(microphone.Microphone),
             cv.Required("wake_sound"): cv.use_id(switch.Switch),
             cv.Optional("length_ms", default=250): cv.int_range(min=1, max=1000),
+            cv.Optional("buffer_feedback", default=False): cv.boolean,
         }
     ).extend(cv.COMPONENT_SCHEMA),
     pre_roll_stream_limits,
@@ -307,6 +308,9 @@ async def to_code(config):
     if "pre_roll" in config:
         cg.add_define("USE_ASSIST_LIVE_PRE_ROLL")
         pre_roll = config["pre_roll"]
+        if pre_roll["buffer_feedback"]:
+            cg.add_define("USE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK")
+            cg.add_define("USE_VOICE_ASSISTANT_MICROPHONE_BUFFER_STATE")
         mic = cg.new_Pvariable(pre_roll[CONF_ID])
         await cg.register_component(mic, pre_roll)
         await microphone.register_microphone(mic, pre_roll)
