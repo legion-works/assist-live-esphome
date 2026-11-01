@@ -2122,7 +2122,7 @@ Device test results with one speaker, with beam search for the server `final` tr
 
 - With 450 ms of history, 9 of 11 transcripts started with more words from the end of the wake word.
 - An offline crop of 22 recorded turns gave clean transcripts with 266 ms of history or less.
-  The first command word stayed in all turns with 91 ms of history or more.
+  The first command word went missing only with 91 ms of history or less.
 - With 200 ms, the device sent 216 to 232 ms of history in each turn.
   All 13 turns gave the clean command.
   Three of these turns had no pause after the wake word.

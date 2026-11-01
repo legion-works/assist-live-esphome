@@ -58,7 +58,7 @@ protected:
   StereoFrame *memory_{nullptr};
   std::unique_ptr<PreRollBuffer> buffer_;
   std::vector<uint8_t> output_, silence_;
-  uint32_t length_ms_{250};
+  uint32_t length_ms_{200};
   size_t capacity_{0}, reported_overflows_{0};
   unsigned listeners_{0};
   uint64_t arm_ms_{0}, arm_to_start_ms_{0};
