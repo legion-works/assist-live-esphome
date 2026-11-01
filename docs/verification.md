@@ -2011,3 +2011,49 @@ The compile targets include default UDP, default WebSocket, pre-roll, and the tr
 An isolated pre-roll probe compile uses WebSocket diagnostics and fake external compile values.
 Each compile uses the pinned CMake `3.30.2` check and the `new_warnings=0` requirement.
 No device access, flash, or upload is part of these checks.
+
+## Change-only counter publication
+
+Record date: `2026-11-01` (UTC).
+
+The counter publisher samples at most one time each second.
+It publishes only changed values, the first values after boot, and entities with no state.
+The connection binary sensor follows the same rule.
+The publisher compares counter integers before conversion to sensor floats.
+Completed-turn measurements continue to publish one time for each finished turn.
+
+The component uses public `EntityBase::has_state()` for missing state.
+It does not add an API reconnect callback.
+The pinned API sends current entity states to each client after its state subscription.
+See [diagnostic publication and reconnect](diagnostics.md#counters-and-transport-state) for the public interfaces and sources.
+
+Initial regression command:
+
+```sh
+uv run --locked pytest tests/test_diagnostics.py::test_native_diagnostic_snapshot_and_publish_schedule -q
+```
+
+The native program compiled, then stopped at `unchanged counters and connectivity stay silent across many seconds`.
+The repaired publisher gave `9 passed` in the diagnostic and microphone tests.
+The native tests also check initial 0 and binary off, and a changed sample in less than one second.
+They check missing state and counters above float integer precision.
+An isolated mutation removed the two change checks.
+It compiled, then stopped at the same named assertion.
+
+The `EXPIRED_GATES` argument has a one-line comment that identifies its snapshot source.
+The cosmetic `force_update` schema-visibility nit is a follow-up because its formatted repair is not one line.
+Pacing, history length, and the 256 ms backlog rule do not change.
+
+The acceptance commands are:
+
+```sh
+ESPHOME_WORK_DIR="$CHECK_TMP" PRIVATE_DENYLIST="$PRIVATE_DENYLIST" task check
+UV_PROJECT_ENVIRONMENT="$CHECK_TMP/venv312" uv run --locked --python 3.12 pytest tests/ -q
+python3 "$STE_CHECKER" docs/diagnostics.md docs/verification.md
+python3 "$PUBLIC_TREE_CHECKER" --root . --private-denylist "$PRIVATE_DENYLIST" --history
+git diff --check
+```
+
+The compile targets are default UDP, default WebSocket, pre-roll, and the two probes.
+Each compile uses CMake `3.30.2` and the `new_warnings=0` requirement.
+No commit, device access, flash, or upload is part of this repair.

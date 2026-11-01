@@ -81,8 +81,16 @@ API batching can also merge state updates during congestion.
 
 Counters use `state_class: total_increasing` and no physical unit.
 They start at 0 after boot.
-The component samples and publishes them at most one time each second from its main loop.
+The component samples them at most one time each second from its main loop.
+It publishes only values that changed, plus the first value after boot.
+It compares counter integers before the sensor float conversion.
 The optional `connected` binary sensor uses the same interval and the `connectivity` device class.
+
+If public `has_state() == false`, the next eligible sample publishes the entity again.
+This does not remove the one-second rate limit.
+An API reconnect does not clear entity state.
+ESPHome sends the current state to each API client when it subscribes.
+The component does not transmit unchanged values to all clients on reconnect.
 
 | Key | Meaning |
 | --- | --- |
@@ -121,6 +129,9 @@ Source access date: `2026-11-01` (UTC). Pinned ESPHome version: `2026.10.0`.
 - [Sensor state storage](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/sensor/sensor.cpp#L116-L124).
 - [Sensor API state path](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/api/api_connection.cpp#L694-L705).
 - [Deferred state send](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/api/api_connection.cpp#L2449-L2499).
+- [Public entity state check](https://github.com/esphome/esphome/blob/2026.10.0/esphome/core/entity_base.h#L146-L149).
+- [API state subscription and initial replay](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/api/api_connection.h#L293-L299).
+- [Initial state handlers](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/api/subscribe_state.h#L13-L15) send sensor and binary-sensor states to the subscribed client.
 - [Best-effort log send](https://github.com/esphome/esphome/blob/2026.10.0/esphome/components/api/api_server.cpp#L765-L776).
 
 Native tests check snapshots, main-loop publication, rate limits, and write/confirmation counts.

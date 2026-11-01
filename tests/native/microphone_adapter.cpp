@@ -196,7 +196,7 @@ template<typename T> static void retained_source_lifecycle() {
     assert(sent_sensor.states.size() == counter_updates && "counter entities rate limit same-millisecond loops");
     advance_time(1000);
     publish();
-    assert(sent_sensor.states.size() == counter_updates + 1 && "counter entities update at one-second boundary");
+    assert(sent_sensor.states.size() == counter_updates && "unchanged counter entities stay silent at one-second boundary");
 #endif
     va.running = false;
     feed(5000);

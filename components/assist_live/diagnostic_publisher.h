@@ -25,10 +25,16 @@ public:
       return;
     counters[EXPIRED_GATES] = expired_gates_;
     for (size_t i = 0; i < COUNTER_SENSOR_COUNT; ++i)
-      if (counter_sensors_[i] != nullptr)
+      if (counter_sensors_[i] != nullptr &&
+          (!counter_published_[i] || !counter_sensors_[i]->has_state() || last_counters_[i] != counters[i])) {
         counter_sensors_[i]->publish_state(counters[i]);
-    if (connected_ != nullptr)
+        last_counters_[i] = counters[i];
+        counter_published_[i] = true;
+      }
+    if (connected_ != nullptr && (!connected_->has_state() || last_connected_ != connected)) {
       connected_->publish_state(connected);
+      last_connected_ = connected;
+    }
   }
 
 protected:
@@ -37,6 +43,9 @@ protected:
   binary_sensor::BinarySensor *passthrough_{nullptr}, *connected_{nullptr};
   DiagnosticState schedule_;
   uint32_t expired_gates_{0};
+  std::array<uint32_t, COUNTER_SENSOR_COUNT> last_counters_{};
+  std::array<bool, COUNTER_SENSOR_COUNT> counter_published_{};
+  int8_t last_connected_{-1};
 };
 }
 #endif

@@ -86,6 +86,47 @@ int main() {
   publisher.loop(1000, {12, 8, 4, 3, 2, 99}, false);
   assert(!connected.states.back() && counters[EVENTS_SENT].states.back() == 12 &&
          "counter and connectivity entities refresh on boundary");
+  assert(connected.states.size() == 2 && counters[EVENTS_SENT].states.size() == 2 &&
+         "boot and first changed sample publish once");
+  for (uint64_t now = 2000; now <= 60000; now += 1000)
+    publisher.loop(now, {12, 8, 4, 3, 2, 99}, false);
+  assert(connected.states.size() == 2 && counters[EVENTS_SENT].states.size() == 2 &&
+         "unchanged counters and connectivity stay silent across many seconds");
+  for (const auto &counter : counters)
+    assert(counter.states.size() <= 2 && "every unchanged counter is deduplicated");
+  publisher.loop(60001, {13, 8, 4, 3, 2, 99}, true);
+  assert(connected.states.size() == 2 && counters[EVENTS_SENT].states.size() == 2 &&
+         "changed state still respects one-second rate limit");
+  publisher.loop(61000, {13, 8, 4, 3, 2, 99}, true);
+  assert(connected.states.size() == 3 && counters[EVENTS_SENT].states.size() == 3 &&
+         counters[EVENTS_SENT].states.back() == 13 && connected.states.back() &&
+         counters[EVENTS_CONFIRMED].states.size() == 2 &&
+         "changed entities publish once within one second without unchanged neighbors");
+  publisher.loop(62000, {13, 8, 4, 3, 2, 99}, true);
+  assert(connected.states.size() == 3 && counters[EVENTS_SENT].states.size() == 3 &&
+         "changed entities do not republish after settling");
+  counters[EVENTS_SENT].set_has_state(false);
+  connected.set_has_state(false);
+  publisher.loop(63000, {13, 8, 4, 3, 2, 99}, true);
+  assert(connected.states.size() == 4 && counters[EVENTS_SENT].states.size() == 4 &&
+         "missing entity state republishes once on next eligible main loop");
+  publisher.loop(64000, {13, 8, 4, 3, 2, 99}, true);
+  assert(connected.states.size() == 4 && counters[EVENTS_SENT].states.size() == 4 &&
+         "recovered entity state returns to change-only publication");
+  publisher.loop(65000, {16777216, 8, 4, 3, 2, 99}, true);
+  publisher.loop(66000, {16777217, 8, 4, 3, 2, 99}, true);
+  assert(counters[EVENTS_SENT].states.size() == 6 &&
+         "deduplication compares exact counter integers not rounded sensor floats");
+  DiagnosticPublisher boot;
+  esphome::sensor::Sensor zero_counter;
+  esphome::binary_sensor::BinarySensor disconnected;
+  boot.set_counter_sensor(EVENTS_SENT, &zero_counter);
+  boot.set_connected(&disconnected);
+  boot.loop(0, {}, false);
+  boot.loop(1000, {}, false);
+  assert(zero_counter.states.size() == 1 && zero_counter.states.back() == 0 &&
+         disconnected.states.size() == 1 && !disconnected.states.back() &&
+         "zero and false publish exactly once after boot");
   test_publish_allowed = false;
   std::cout << "PASS diagnostics\n";
 }

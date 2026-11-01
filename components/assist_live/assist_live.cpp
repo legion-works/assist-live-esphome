@@ -644,7 +644,7 @@ void AssistLiveComponent::loop() {
     diagnostics_.publish_turn(turn);
 #endif
   diagnostics_.loop(monotonic_ms(), {sent_.load(), confirmed_.load(), dropped_.load(),
-                    refused_.load(), initialization_failures_.load(), 0}, connected_.load());
+                    refused_.load(), initialization_failures_.load(), 0 /* EXPIRED_GATES uses the turn snapshot. */}, connected_.load());
 }
 #endif
 
