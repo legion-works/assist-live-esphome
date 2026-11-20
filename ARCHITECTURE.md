@@ -31,12 +31,19 @@ No hardware trial result or transport selection is available.
 
 ## Reply wake window
 
-`examples/wake-word.yaml` applies the stock Very sensitive cutoffs while the media player announces.
+`examples/wake-word.yaml` has two experimental substitutions, `assist_live_reply_window` and `assist_live_reply_restart`. Enable them independently.
+Each defaults to `'false'` in the shared handler, base example, and pre-roll overlay.
+Keep them off until device tests give satisfactory results.
+Config-time includes do not load disabled packages.
+With the two options off, tests remove the timing and arm slots, then compare the complete wake handler with pinned stock.
+
+With `assist_live_reply_window: 'true'`, the overlay applies the stock Very sensitive cutoffs while the media player announces.
 This includes voice-assistant replies and standalone announcements, not ordinary media playback.
+Timer rings and device sounds are announcements and also open the window.
 The cutoffs are 143 for Okay Nabu, 212 for Hey Jarvis, and 237 for Hey Mycroft.
 
 The Stop word model, timer functions, and mute decisions stay unchanged.
-A named wake during a VA reply stops that reply and starts a new wake turn after VA goes to `IDLE`.
+With `assist_live_reply_restart: 'true'`, a named wake during a VA reply stops it and starts a new wake turn after VA goes to `IDLE`.
 The handler identifies a VA reply with three conditions: VA runs, the stock phase is replying, and the media player announces.
 Stop is not a named wake for this decision.
 
@@ -48,22 +55,26 @@ Its first value callback adds one media-player state subscriber.
 The subscriber does not replace the stock media or boot `actions`.
 `ReplyWakeWindow` supplies one local cutoff table. A resolved-config test compares it with the pinned stock select.
 
-After playback ends, one restartable script waits for VA `IDLE`.
-Then it waits 2000 ms before it uses the current option again.
-`ReplyWakeWindow::REPLY_TAIL_MS` supplies this interval to the policy and the YAML timer.
+The playback falling edge starts a 2000 ms tail, supplied by `ReplyWakeWindow::REPLY_TAIL_MS`.
+The active tail script checks and applies cutoffs at `REPLY_CHECK_MS` intervals of 25 ms.
+The deadline and scheduler use the same `millis_64()` clock.
+A check before the deadline does not end the script. The next check closes the window.
 
-The wait runs only in a reply window. VA `on_idle` fires only in continuous mode in the pinned ESPHome version.
-A follow-up `on_listening` signal releases the previous reply without waiting for the new turn to end.
-A new announcement cancels the previous tail.
-If VA does not go to `IDLE` in 30 s after playback, the script logs the timeout and uses the selected cutoffs again.
+A new listening turn does not move the deadline. VA can stay busy.
+A new announcement replaces the previous tail.
+The software bound is the last playback end plus 2000 ms and one check interval, with scheduler latency.
+The script does not poll while no window is active. It does not wait 30 s for VA.
 
-This limit does not end the window during an announcement that continues to play.
 Selecting Very sensitive makes no cutoff change at the window edges.
 
 Each applied cutoff change logs the model, integer value, and `reason` at INFO level.
 The `reason` values are `reply window start`, `reply window end`, and `select changed`.
 This policy increases sensitivity only in the reply window. Incorrect detections can stop replies.
 Device tests must measure wake detection and the `false-accept rate`. Native tests do not prove acoustic performance.
+
+In the current device checks, a wake word in the middle of a reply usually gives no detection.
+The detector accepted 0 of 4 cases with 2 s or more of reply left.
+This is a small test set, not a general acoustic guarantee.
 
 ## Reply wake restart
 
@@ -78,6 +89,9 @@ The new turn gets the lookback before detection and the continuous bridge throug
 The same 1000 ms total limit applies. The component counts each frame that it removes from the oldest end.
 `pre_roll_ms` reports only history actually sent to VA.
 With the wake sound on, the turn gets the same sound interval and no history, as in an `IDLE` wake turn.
+
+After the chime, the script checks timer and announcement state again before it starts VA.
+If one becomes active, it cancels the pending request and history without a start.
 
 A second named wake during the wait does not queue one more turn.
 Stop during the wait cancels the pending request and its history, then follows the stock stop branch.

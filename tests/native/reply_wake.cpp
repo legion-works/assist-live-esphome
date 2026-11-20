@@ -62,9 +62,9 @@ int main(int argc, char **argv) {
   } else if (scenario == "follow_up_listening") {
     window.observe(500, false, true);
     window.listening(501);
-    window.observe(2500, false, true);
+    window.observe(2499, false, true);
     assert(cutoff() == 143);
-    window.observe(2501, false, true);
+    window.observe(2500, false, true);
     assert(cutoff() == 176 && "follow-up listening must not hold previous reply window");
   } else if (scenario == "announcement") {
     window.observe(200, true, false);

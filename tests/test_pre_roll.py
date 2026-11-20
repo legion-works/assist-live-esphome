@@ -337,6 +337,13 @@ def assert_stock_wake_handler(handler, stock_handler, arm):
             return {key: without_arm(item) for key, item in value.items()}
         return value
 
+    if len(handler) == 2:
+        normalized = without_arm(copy.deepcopy(handler[1:]))
+        assert normalized == stock_handler, (
+            "stock wake handler drift: default-off handler"
+        )
+        assert removed == {"arm": 1, "started": 1}
+        return normalized
     assert handler[1] == {
         "if": {
             "condition": {
@@ -467,8 +474,10 @@ def test_stock_wake_handler_upgrade_drift_has_named_failure(tmp_path):
 
 
 def test_resolved_pre_roll_rewires_only_va_and_preserves_stock_actions(tmp_path):
-    baseline = resolved_config(ROOT / "tests/fixtures/voice-pe.yaml", tmp_path)
-    enabled = resolved_config(ROOT / "tests/fixtures/voice-pe-pre-roll.yaml", tmp_path)
+    from tests.test_reply_options import reply_config
+
+    baseline = reply_config(ROOT / "tests/fixtures/voice-pe.yaml", tmp_path)
+    enabled = reply_config(ROOT / "tests/fixtures/voice-pe-pre-roll.yaml", tmp_path)
     assert "pre_roll" not in baseline["assist_live"]
     assert [
         source["microphone"] for source in baseline["voice_assistant"]["microphone"]

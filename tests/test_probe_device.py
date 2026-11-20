@@ -208,18 +208,18 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
     import copy
 
     from tests.test_pre_roll import assert_stock_wake_handler
-    from tests.test_reply_wake import assert_reply_wake_wiring
+    from tests.test_reply_options import assert_stock_off
     from tools.check_bootstrap import check_preserved
 
     production, stock_probe = resolved_configs
     production = copy.deepcopy(production)
+    assert_stock_off(stock_probe, production)
     production_handler = production["micro_wake_word"]["on_wake_word_detected"]
     production_handler["then"] = assert_stock_wake_handler(
         production_handler["then"],
         stock_probe["micro_wake_word"]["on_wake_word_detected"]["then"],
         "return;",
     )
-    assert_reply_wake_wiring(stock_probe, production)
     for before, after in zip(stock_probe["select"], production["select"], strict=True):
         if before["id"] == "wake_word_sensitivity":
             after["on_value"] = before["on_value"]
@@ -253,6 +253,8 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
         "assist_live_reply_capture": "return;",
         "assist_live_reply_ready": "return true;",
         "assist_live_reply_cancel": "return;",
+        "assist_live_reply_window": "false",
+        "assist_live_reply_restart": "false",
     }.items():
         assert production["substitutions"].pop(key) == value
     for section in stock_probe:

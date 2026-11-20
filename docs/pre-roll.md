@@ -59,7 +59,10 @@ After an ESPHome upgrade, the resolved-config and generated-code checks must giv
 ## Turn selection
 
 The overlay keeps the stock mute, timer, Stop, standalone announcement, and wake-sound decisions.
-Only a named wake during VA reply playback changes from stop-only to stop and restart.
+The reply-window and reply-restart substitutions each default to `'false'`, also in this overlay.
+Keep them off until device tests give satisfactory results.
+
+Only with `assist_live_reply_restart: 'true'` does a named wake during VA reply playback change from stop-only to stop and restart.
 It puts the timing `action` first, before the wake sound and its 300 ms interval.
 It adds an arm call immediately before `voice_assistant.start`, after that interval.
 One call immediately after that start connects the arm to the wake request.
@@ -95,6 +98,11 @@ Stop, error, disconnect, and shutdown clear the queue.
 
 ## Reply stop and restart
 
+This path uses `assist_live_reply_restart: 'true'`. It is off by default. Enable it independently of `assist_live_reply_window`.
+The detector usually reports no wake word in the middle of a reply in the current device checks.
+With 2 s or more of reply left, it accepted 0 of 4 cases.
+The cutoff window, when enabled, also includes timer rings and device sounds because they use announcement playback.
+
 A named wake during a VA reply captures the lookback at the detection time, before it stops the reply.
 The physical wake detector keeps the shared microphone active while VA stops.
 The component appends new frames to the same ring during this interval.
@@ -111,6 +119,8 @@ Stop or mute during the wait also cancels the request and clears its history.
 A second named wake during the wait does not make one more request.
 The logs give `detection_to_idle_ms` and `detection_to_start_ms` for each restart.
 The `pre_roll_ms` value counts only history actually sent, after the oldest-end removal.
+
+The post-chime check also prevents a start if a timer or a new announcement becomes active during the chime.
 
 Native tests use a 300 ms stop interval and numbered stereo frames.
 They check the initial detection time, no missing or duplicate frames, the two boundary points, and counted oldest-end removal at the total limit.

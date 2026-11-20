@@ -1,6 +1,8 @@
 # This project has no release. Use the local source checkout.
 # Keep real credentials in a secrets directory outside this repository.
 substitutions:
+  assist_live_reply_window: 'false'
+  assist_live_reply_restart: 'false'
   test_device: assist-live-example
   assist_live_server: !secret assist_live_server
   voice_pe_sounds: https://raw.githubusercontent.com/esphome/home-assistant-voice-pe/2644f4c794271d735d182ca7ebf899ed46164f4e/sounds

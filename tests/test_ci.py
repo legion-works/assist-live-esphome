@@ -239,12 +239,16 @@ def test_ci_runs_native_vectors_and_both_transport_compiles():
     assert "task config compile" in compile_steps
     history = "\n".join(tasks["compile-pre-roll"]["cmds"])
     for required in (
-        "tests/fixtures/voice-pe-pre-roll.yaml",
+        "tests/fixtures/voice-pe-reply-wake.yaml",
         "check_release.py --compile-log",
         "--build-root",
         "gitleaks dir",
     ):
         assert required in history
+    fixture = (ROOT / "tests/fixtures/voice-pe-reply-wake.yaml").read_text()
+    assert "base: !include voice-pe-pre-roll.yaml" in fixture
+    for option in ("assist_live_reply_window", "assist_live_reply_restart"):
+        assert f"  {option}: 'true'" in fixture
 
 
 def test_ci_keeps_one_checkout_and_fetches_the_authority():

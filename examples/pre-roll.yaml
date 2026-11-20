@@ -8,6 +8,8 @@ assist_live:
     wake_sound: wake_sound
 
 substitutions:
+  assist_live_reply_window: 'false'
+  assist_live_reply_restart: 'false'
   assist_live_wake_arm: 'id(pre_roll_mic).wake_detected();'
   assist_live_wake_started: 'id(pre_roll_mic).wake_started();'
   assist_live_reply_capture: 'id(pre_roll_mic).capture_reply_wake();'

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+- if:
+    condition:
+      lambda: |-
+        return wake_word != "Stop"
+            && id(voice_assistant_phase) == ${voice_assist_replying_phase_id}
+            && id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING;
+    then:
+      - script.execute:
+          id: assist_live_restart_reply_wake
+          wake_word: !lambda return wake_word;
+    else:
+      - voice_assistant.stop:

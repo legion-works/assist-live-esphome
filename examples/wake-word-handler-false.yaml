@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+- assist_live.emit_event:
+    id: assist_live_component
+    stage: wake_detected
+- if:
+    condition:
+      switch.is_off: master_mute_switch
+    then: !include wake-word-priority.yaml

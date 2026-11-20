@@ -8,6 +8,7 @@ namespace esphome::assist_live {
 class ReplyWakeWindow {
 public:
   static constexpr uint32_t REPLY_TAIL_MS = 2000;
+  static constexpr uint32_t REPLY_CHECK_MS = 25;
   void select(const std::string &option) {
     if (option == "Slightly sensitive")
       selected_ = 0;
@@ -18,7 +19,7 @@ public:
     apply_("select changed");
   }
 
-  bool observe(uint32_t now, bool announcing, bool va_running) {
+  bool observe(uint32_t now, bool announcing, bool) {
     const bool started = announcing && !announcing_;
     announcing_ = announcing;
     if (started) {
@@ -28,7 +29,7 @@ public:
       apply_("reply window start");
     }
     if (active_ && !announcing_) {
-      if (!tail_ && (!va_running || listening_turn_)) {
+      if (!tail_) {
         tail_ = true;
         idle_ms_ = now;
       }
@@ -52,6 +53,7 @@ public:
     apply_("reply window end");
   }
   bool announcing() const { return announcing_; }
+  bool active() const { return active_; }
   bool listening_turn() const { return listening_turn_; }
   std::array<uint8_t, 3> cutoffs() const { return applied_; }
   const char *reason() const { return reason_; }

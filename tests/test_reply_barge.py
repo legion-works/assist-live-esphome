@@ -4,7 +4,7 @@ import subprocess
 import pytest
 
 from tests.event_vectors import COMPONENT, ROOT, compiler, run
-from tests.test_pre_roll import resolved_config
+from tests.test_reply_options import reply_config
 
 
 def condition_cpp(value):
@@ -60,7 +60,7 @@ def actions_cpp(actions):
                 result.append(f"id({name}).execute({argument});")
         elif key == "delay":
             assert value == "300ms"
-            result.append("now += 300;")
+            result.append("chime_wait();")
         elif key == "wait_until":
             assert value["timeout"] == "500ms"
             condition = condition_cpp(value["condition"])
@@ -73,7 +73,7 @@ def actions_cpp(actions):
 @pytest.fixture(scope="module")
 def reply_barge_native(tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp("reply-barge")
-    config = resolved_config(ROOT / "tests/fixtures/voice-pe-pre-roll.yaml", tmp_path)
+    config = reply_config(ROOT / "tests/fixtures/voice-pe-pre-roll.yaml", tmp_path)
     scripts = {str(item["id"]): item for item in config["script"]}
     if "assist_live_restart_reply_wake" not in scripts:
         return None
@@ -121,6 +121,9 @@ def reply_barge_native(tmp_path_factory):
         "pending_stop",
         "pending_wake",
         "pending_mute",
+        "chime",
+        "timer_during_chime",
+        "announcement_during_chime",
     ],
 )
 def test_reply_stop_then_start(reply_barge_native, scenario):

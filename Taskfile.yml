@@ -98,7 +98,7 @@ tasks:
       - mkdir -p "{{.WORK_ROOT}}"
       - |
         set -eu
-        if uv run --locked esphome compile tests/fixtures/voice-pe-pre-roll.yaml >"{{.WORK_ROOT}}/compile-pre-roll.log" 2>&1; then
+        if uv run --locked esphome compile tests/fixtures/voice-pe-reply-wake.yaml >"{{.WORK_ROOT}}/compile-pre-roll.log" 2>&1; then
           tail -20 "{{.WORK_ROOT}}/compile-pre-roll.log"
         else
           tail -80 "{{.WORK_ROOT}}/compile-pre-roll.log"

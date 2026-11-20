@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+- assist_live.emit_event:
+    id: assist_live_component
+    stage: wake_detected
+- if:
+    condition:
+      lambda: return id(reply_wake_pending) && wake_word == "Stop";
+    then:
+      - script.execute: assist_live_cancel_reply_wake
+- if:
+    condition:
+      and:
+        - lambda: return !id(reply_wake_pending);
+        - switch.is_off: master_mute_switch
+    then: !include wake-word-priority.yaml

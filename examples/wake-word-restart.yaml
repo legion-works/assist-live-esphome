@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+globals:
+  - id: reply_wake_pending
+    type: bool
+    initial_value: 'false'
+  - id: reply_wake_detected_ms
+    type: uint32_t
+    initial_value: '0'
+
+voice_assistant:
+  on_error:
+    - script.execute: assist_live_cancel_reply_wake
+  on_client_disconnected:
+    - script.execute: assist_live_cancel_reply_wake
+
+switch:
+  - id: !extend master_mute_switch
+    on_turn_on:
+      - script.execute: assist_live_cancel_reply_wake
+
+script:
+  - id: assist_live_cancel_reply_wake
+    then:
+      - lambda: |-
+          if (!id(reply_wake_pending)) return;
+          id(reply_wake_pending) = false;
+          id(assist_live_restart_reply_wake).stop();
+          ESP_LOGI("assist_live.reply_wake", "Reply wake canceled");
+          ${assist_live_reply_cancel}
+  - id: assist_live_restart_reply_wake
+    mode: single
+    parameters:
+      wake_word: std::string
+    then:
+      - lambda: |-
+          id(reply_wake_pending) = true;
+          id(reply_wake_detected_ms) = millis();
+          ${assist_live_reply_capture}
+      - voice_assistant.stop:
+      - wait_until:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_announcing:
+                    id: external_media_player
+          timeout: 500ms
+      - if:
+          condition:
+            and:
+              - lambda: return id(reply_wake_pending);
+              - switch.is_off: master_mute_switch
+              - switch.is_off: timer_ringing
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_announcing:
+                    id: external_media_player
+              - lambda: ${assist_live_reply_ready}
+          then:
+            - lambda: |-
+                ESP_LOGI("assist_live.reply_wake", "Reply wake detection_to_idle_ms=%u",
+                         unsigned(millis() - id(reply_wake_detected_ms)));
+            - if:
+                condition:
+                  switch.is_on: wake_sound
+                then:
+                  - script.execute:
+                      id: play_sound
+                      priority: true
+                      sound_file: wake_word_triggered_sound
+                  - delay: 300ms
+            - if:
+                condition:
+                  and:
+                    - lambda: return id(reply_wake_pending);
+                    - switch.is_off: master_mute_switch
+                    - switch.is_off: timer_ringing
+                    - not:
+                        voice_assistant.is_running:
+                    - not:
+                        media_player.is_announcing:
+                          id: external_media_player
+                    - lambda: ${assist_live_reply_ready}
+                then:
+                  - lambda: |-
+                      ESP_LOGI("assist_live.reply_wake", "Reply wake detection_to_start_ms=%u",
+                               unsigned(millis() - id(reply_wake_detected_ms)));
+                  - lambda: ${assist_live_wake_arm}
+                  - voice_assistant.start:
+                      wake_word: !lambda return wake_word;
+                  - lambda: ${assist_live_wake_started}
+                  - lambda: id(reply_wake_pending) = false;
+                else:
+                  - script.execute: assist_live_cancel_reply_wake
+          else:
+            - lambda: ESP_LOGW("assist_live.reply_wake", "Reply wake idle wait expired or start blocked");
+            - script.execute: assist_live_cancel_reply_wake

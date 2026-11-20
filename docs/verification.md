@@ -2243,3 +2243,50 @@ No upload, device access, or audio playback is part of these checks.
 Native tests do not prove capture continuity or acoustic results on a device.
 
 Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word during a reply](https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll).
+
+## Bounded reply-check loop and default-off options
+
+Date: 2026-11-20 (UTC).
+
+One device window stayed open through the next listening turn.
+The previous script made only one timed close check. If that check ran before the deadline, it left the low cutoff active without a retry.
+The scheduler used `millis_64()` while the policy used `millis()`.
+On the pinned platform these use different clocks. The device log does not show the closing check time.
+
+The playback falling edge starts the 2000 ms tail, regardless of VA state.
+An active tail checks and applies cutoffs at 25 ms intervals with the scheduler's `millis_64()` clock.
+A new listening turn does not move the deadline. A new announcement replaces it.
+The software bound is 2000 ms plus one check interval, with scheduler latency.
+The implementation does not wait 30 s for VA.
+
+`assist_live_reply_window` and `assist_live_reply_restart` each default to `'false'` in the shared handler, base example, and pre-roll overlay.
+Config-time includes do not load disabled packages. Shared fragments keep one stock handler body.
+With the two options off, tests remove the timing and two arm slots, then compare the complete handler with pinned stock.
+Tests also check each enabled option independently and the combination.
+
+The post-chime check includes timer and announcement state.
+Native cases start a timer or a new announcement during the chime and check that VA does not start.
+The cases also check that cancellation clears pending history.
+The window tests include a check before the deadline, different clocks, a new turn in the tail, and VA that stays busy.
+
+RED on the previous commit gave `8 failed, 1 passed` for the new checks.
+The first targeted GREEN suite gave `36 passed`.
+The default-off checks include the base and pre-roll configurations and all repository entry examples.
+The pre-roll compile gate explicitly enables the two options, while the base transport gates check the defaults.
+
+Current device checks usually give no detection for a wake word in the middle of a reply.
+With 2 s or more of reply left, the detector accepted 0 of 4 cases.
+Timer rings and device sounds also open an enabled window because they use announcement playback.
+Keep the two options off until device tests give satisfactory results.
+
+Acceptance uses `task check`, the canonical privacy checker with history and the private denylist, STE, and `git diff --check`.
+All commands use the external `idle-run.sh` wrapper.
+The private 200 ms probe enables the two options explicitly and keeps ESPHome OTA and environment-based API encryption.
+No upload script, device access, or audio playback is part of this change.
+
+Result: `task check` exited 0. Python 3.14 and 3.12 each gave `267 passed`.
+UDP, WebSocket, opt-in pre-roll, and the transport probe each gave `new_warnings=0`.
+The canonical privacy checker gave `PASS public data matches=0` with history and the private denylist.
+The private probe compiled with `new_warnings=0`. Resolved length was 200 ms and the two options were `'true'`.
+
+Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word during a reply](https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll).

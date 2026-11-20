@@ -1,0 +1,6 @@
+# Compile only. This gate enables the two experimental reply-wake options.
+packages:
+  base: !include voice-pe-pre-roll.yaml
+substitutions:
+  assist_live_reply_window: 'true'
+  assist_live_reply_restart: 'true'

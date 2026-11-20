@@ -43,18 +43,23 @@ It uses the local `components/` directory because this project has no release.
 
 Keep actual flash credentials in an external secrets directory.
 Copy the example to that directory. Change its local component path to your source checkout.
+Keep the `wake-word*.yaml` fragments together, or point the wake include to the source checkout.
 Put the actual `secrets.yaml` adjacent to that copy, not in this repository.
 
 Set `assist_live_device`, `assist_live_hmac_key`, and `assist_live_server` in the external secrets file.
 The example uses them as the anonymous device identifier, 32-byte hexadecimal HMAC key, and server address.
 It selects UDP timing events. No device trial or transport selection result is available.
 
-The shared wake overlay uses the stock Very sensitive cutoffs during replies and announcements.
-It keeps these cutoffs for 2000 ms after playback ends and VA goes to `IDLE`.
-Then it uses the current sensitivity selection again. A follow-up listening turn also starts this tail.
+The experimental `assist_live_reply_window` and `assist_live_reply_restart` options are each `'false'` by default, also with pre-roll.
+Keep them off until device tests give satisfactory results. Enable them independently.
+With the window on, replies and announcements use the stock Very sensitive cutoffs.
+Announcements include timer rings and device sounds.
+The current sensitivity applies again 2000 ms after playback ends, with checks at 25 ms intervals.
 
-During a VA reply, a named wake stops the reply and starts a new wake turn after VA goes to `IDLE`.
+With restart on, a named wake detection during a VA reply stops it and starts a new wake turn after VA goes to `IDLE`.
 The wait has a 500 ms limit. Stop, timer, mute, and other busy-state decisions stay unchanged.
+Wake words in the middle of a reply usually give no detection in the current checks.
+With 2 s or more of reply left, the detector accepted 0 of 4 test cases.
 See [the wake policy](ARCHITECTURE.md#reply-wake-window) for limits and logs.
 
 ## Documentation

@@ -18,6 +18,7 @@ bool expired{false};
 void detect(const std::string &wake_word);
 void restart(const std::string &wake_word);
 void cancel();
+void chime_wait();
 uint32_t millis() { return now; }
 struct Switch { bool state{false}; } master_mute_switch, timer_ringing, wake_sound;
 namespace media_player { enum State { MEDIA_PLAYER_STATE_ANNOUNCING }; }
@@ -81,9 +82,20 @@ void log_line(const char *, const char *format, ...) {
 void cancel() { CANCEL_BODY }
 void restart(const std::string &wake_word) { (void)wake_word; RESTART_BODY }
 void detect(const std::string &wake_word) { HANDLER_BODY }
+std::string scenario;
+void chime_wait() {
+  now += 300;
+  if (scenario == "timer_during_chime") timer_ringing.state = true;
+  if (scenario == "announcement_during_chime") {
+    announcing = true;
+    external_media_player.state = media_player::MEDIA_PLAYER_STATE_ANNOUNCING;
+  }
+}
 int main(int argc, char **argv) {
   assert(argc == 2);
-  const std::string scenario = argv[1];
+  scenario = argv[1];
+  if (scenario == "chime" || scenario.find("during_chime") != std::string::npos)
+    wake_sound.state = true;
   if (scenario == "timer") timer_ringing.state = true;
   if (scenario == "muted") master_mute_switch.state = true;
   if (scenario == "listening") voice_assistant_phase = 2;
@@ -95,14 +107,15 @@ int main(int argc, char **argv) {
   if (scenario == "pending_mute") injection = "mute";
   detect(scenario == "stop" ? "Stop" : "Okay Nabu");
   assert(!events.empty() && events.front() == "wake" && wake_times.front() == 100 && "timing first at detection");
-  const bool starts = scenario == "reply" || scenario == "pending_wake";
+  const bool starts = scenario == "reply" || scenario == "pending_wake" || scenario == "chime";
   assert(va.starts == unsigned(starts) && "only named reply wake starts a replacement turn");
   if (starts) {
     assert(events[1] == "capture" && events[2] == "stop");
     const auto arm = std::find(events.begin(), events.end(), "arm");
     assert(arm != events.end() && *(arm + 1) == "start" && *(arm + 2) == "bound");
     assert(std::find(logs.begin(), logs.end(), "Reply wake detection_to_idle_ms=300") != logs.end());
-    assert(std::find(logs.begin(), logs.end(), "Reply wake detection_to_start_ms=300") != logs.end());
+    assert(std::find(logs.begin(), logs.end(), scenario == "chime" ?
+                    "Reply wake detection_to_start_ms=600" : "Reply wake detection_to_start_ms=300") != logs.end());
   }
   if (scenario == "stop" || scenario == "listening" || scenario == "thinking")
     assert(va.stops == 1 && events.size() == 2);
@@ -112,5 +125,9 @@ int main(int argc, char **argv) {
     assert(std::any_of(logs.begin(), logs.end(), [](const auto &line) { return line.find("idle wait expired") != std::string::npos; }));
   if (scenario == "pending_stop" || scenario == "pending_mute")
     assert(!pre_roll_mic.captured && !reply_wake_pending);
+  if (scenario.find("during_chime") != std::string::npos) {
+    assert(!pre_roll_mic.captured && !reply_wake_pending);
+    assert(va.starts == 0 && "chime races must cancel the pending restart");
+  }
   std::cout << "PASS " << scenario << '\n';
 }

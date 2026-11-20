@@ -4,6 +4,8 @@
 | --- | --- |
 | `components/assist_live/` | Python schema, authenticated event codec, and bounded timing sender |
 | `examples/voice-pe.yaml` | Local-source example that extends the stock Voice PE package |
+| `examples/wake-word*.yaml` | Shared stock handler and config-time experimental option fragments |
+| `tests/fixtures/voice-pe-reply-wake.yaml` | Pre-roll compile fixture with the two reply options on |
 | `tests/test_package.py` | Source-only boundary test |
 | `tests/fixtures/voice-pe.yaml` | Compile-only configuration |
 | `tests/fixtures/secrets.yaml` | Six fake values for the compile fixtures |

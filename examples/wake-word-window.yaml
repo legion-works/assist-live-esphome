@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+globals:
+  - id: reply_wake_window
+    type: assist_live::ReplyWakeWindow
+
+select:
+  - id: !extend wake_word_sensitivity
+    on_value:
+      lambda: |-
+        static bool attached = false;
+        if (!attached) {
+          id(external_media_player).add_on_state_callback([](media_player::MediaPlayerState) {
+            id(assist_live_update_reply_wake).execute();
+          });
+          attached = true;
+        }
+        id(reply_wake_window).select(x);
+        id(assist_live_update_reply_wake).execute();
+
+script:
+  - id: assist_live_apply_wake_cutoffs
+    then:
+      - lambda: |-
+          if (!id(reply_wake_window).take_change()) return;
+          const auto cutoffs = id(reply_wake_window).cutoffs();
+          const auto *reason = id(reply_wake_window).reason();
+          id(okay_nabu).set_probability_cutoff(cutoffs[0]);
+          ESP_LOGI("assist_live.reply_wake", "okay_nabu reason=%s cutoff=%u", reason, unsigned(cutoffs[0]));
+          id(hey_jarvis).set_probability_cutoff(cutoffs[1]);
+          ESP_LOGI("assist_live.reply_wake", "hey_jarvis reason=%s cutoff=%u", reason, unsigned(cutoffs[1]));
+          id(hey_mycroft).set_probability_cutoff(cutoffs[2]);
+          ESP_LOGI("assist_live.reply_wake", "hey_mycroft reason=%s cutoff=%u", reason, unsigned(cutoffs[2]));
+  - id: assist_live_update_reply_wake
+    then:
+      - lambda: |-
+          const bool was_announcing = id(reply_wake_window).announcing();
+          const bool started = id(reply_wake_window).observe(uint32_t(millis_64()),
+              id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING,
+              id(va).is_running());
+          id(assist_live_apply_wake_cutoffs).execute();
+          if (started) id(assist_live_reply_wake_tail).stop();
+          else if (was_announcing && !id(reply_wake_window).announcing())
+            id(assist_live_reply_wake_tail).execute();
+  - id: assist_live_reply_wake_tail
+    mode: restart
+    then:
+      # A single timed check can run before the policy deadline and keep it open.
+      - while:
+          condition:
+            lambda: return id(reply_wake_window).active();
+          then:
+            - delay: !lambda return assist_live::ReplyWakeWindow::REPLY_CHECK_MS;
+            - lambda: |-
+                id(reply_wake_window).observe(uint32_t(millis_64()),
+                    id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING,
+                    id(va).is_running());
+            - script.execute: assist_live_apply_wake_cutoffs

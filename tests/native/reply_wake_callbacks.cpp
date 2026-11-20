@@ -37,7 +37,9 @@ struct Script {
 } assist_live_apply_wake_cutoffs, assist_live_update_reply_wake, assist_live_reply_wake_tail;
 esphome::assist_live::ReplyWakeWindow reply_wake_window;
 uint32_t now{0};
-uint32_t millis() { return now; }
+uint32_t tick_lag{0};
+uint32_t millis() { return now - tick_lag; }
+uint64_t millis_64() { return now; }
 std::vector<std::string> logs;
 void log_line(const char *, const char *format, ...) {
   char buffer[128];
@@ -73,24 +75,59 @@ int main(int argc, char **argv) {
   select_value("Slightly sensitive");
   assert(external_media_player.callbacks.size() == 1 && logs.size() == 3);
   now = 500;
-  if (scenario == "timeout") {
+  if (scenario == "split_clock") {
+    va.running = false;
+    external_media_player.publish(media_player::MEDIA_PLAYER_STATE_IDLE);
+    now = 2500;
+    tick_lag = 1;
+    []() { EXPIRE_BODY }();
+    assist_live_apply_wake_cutoffs.execute();
+    assert(okay_nabu.cutoff == 217 && "the deadline must use the scheduler clock, not lagging ticks");
+    assert(logs.size() == 6);
+    std::cout << "PASS split_clock restores selected cutoffs\n";
+    return 0;
+  }
+  if (scenario == "early_check" || scenario == "turn_in_tail") {
+    assert(esphome::assist_live::ReplyWakeWindow::REPLY_CHECK_MS == 25);
+    va.running = false;
+    external_media_player.publish(media_player::MEDIA_PLAYER_STATE_IDLE);
+    []() { TIMEOUT_BODY }();
+    now = 1900;
+    if (scenario == "turn_in_tail") {
+      va.running = true;
+      reply_wake_window.listening(now);
+    }
+    now = 2499;
+    []() { EXPIRE_BODY }();
+    assist_live_apply_wake_cutoffs.execute();
+    if (REPEATED_CHECK) {
+      now = 2524;
+      []() { EXPIRE_BODY }();
+      assist_live_apply_wake_cutoffs.execute();
+    }
+    assert(okay_nabu.cutoff == 217 && "an early check must retry and close inside the 25 ms bound");
+    assert(logs.size() == 6 && "a listening turn must not keep the old window open");
+    std::cout << "PASS " << scenario << " restores selected cutoffs\n";
+    return 0;
+  }
+  if (scenario == "busy_after_edge") {
     external_media_player.publish(media_player::MEDIA_PLAYER_STATE_IDLE);
     assert(va.running && assist_live_reply_wake_tail.executions == 1);
     logs.clear();
-    now = 30500;
-    []() { TIMEOUT_BODY }();
+    now = 2525;
+    []() { EXPIRE_BODY }();
+    assist_live_apply_wake_cutoffs.execute();
     assert(okay_nabu.cutoff == 217 && hey_jarvis.cutoff == 247 && hey_mycroft.cutoff == 253 &&
-           "timeout must apply selected cutoffs before the tail delay");
-    assert(logs.size() == 4 && "one timeout warning and one cutoff log per model");
-    assert(logs[0] == "VA idle wait expired; restore selected cutoffs");
-    assert(logs[1] == "okay_nabu reason=reply window end cutoff=217");
-    assert(logs[2] == "hey_jarvis reason=reply window end cutoff=247");
-    assert(logs[3] == "hey_mycroft reason=reply window end cutoff=253");
+           "busy VA must not keep the playback window open");
+    assert(logs.size() == 3 && "one cutoff log per model at the busy-VA deadline");
+    assert(logs[0] == "okay_nabu reason=reply window end cutoff=217");
+    assert(logs[1] == "hey_jarvis reason=reply window end cutoff=247");
+    assert(logs[2] == "hey_mycroft reason=reply window end cutoff=253");
     now += esphome::assist_live::ReplyWakeWindow::REPLY_TAIL_MS;
     []() { EXPIRE_BODY }();
     assist_live_apply_wake_cutoffs.execute();
-    assert(logs.size() == 4 && "the later tail step must not repeat timeout cutoff logs");
-    std::cout << "PASS timeout restores selected cutoffs exactly once\n";
+    assert(logs.size() == 3 && "the later tail step must not repeat cutoff logs");
+    std::cout << "PASS busy_after_edge restores selected cutoffs\n";
     return 0;
   }
   assert(scenario == "edges");
