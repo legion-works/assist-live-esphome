@@ -42,7 +42,7 @@ def reply_wake_native(tmp_path_factory):
         "overlapping_reply",
         "clock_wrap",
         "change_reasons",
-        "stuck_va_timeout",
+        "busy_va_deadline",
     ],
 )
 def test_native_reply_wake(reply_wake_native, scenario):
@@ -99,7 +99,7 @@ def assert_reply_wake_wiring(stock, config):
         "id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING"
         in update
     )
-    assert "id(va).is_running()" in update
+    assert "id(va)" not in update
     assert "id(reply_wake_window).observe(uint32_t(millis_64())," in update
     assert (
         scripts["assist_live_apply_wake_cutoffs"]["then"][0]["lambda"].count(
@@ -124,8 +124,7 @@ def assert_reply_wake_wiring(stock, config):
                         "lambda": "id(reply_wake_window).observe("
                         "uint32_t(millis_64()),\n"
                         "    id(external_media_player).state == "
-                        "media_player::MEDIA_PLAYER_STATE_ANNOUNCING,\n"
-                        "    id(va).is_running());"
+                        "media_player::MEDIA_PLAYER_STATE_ANNOUNCING);"
                     },
                     {"script.execute": {"id": "assist_live_apply_wake_cutoffs"}},
                 ],

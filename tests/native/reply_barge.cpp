@@ -10,7 +10,8 @@
 #include <vector>
 std::vector<std::string> events, logs;
 std::vector<uint32_t> wake_times;
-uint32_t now{100}, reply_wake_detected_ms{0};
+uint64_t now{100};
+uint32_t reply_wake_detected_ms{0}, tick_lag{0};
 bool announcing{true}, reply_wake_pending{false};
 int voice_assistant_phase{5};
 std::string injection;
@@ -19,7 +20,8 @@ void detect(const std::string &wake_word);
 void restart(const std::string &wake_word);
 void cancel();
 void chime_wait();
-uint32_t millis() { return now; }
+uint32_t millis() { return static_cast<uint32_t>(now) - tick_lag; }
+uint64_t millis_64() { return now; }
 struct Switch { bool state{false}; } master_mute_switch, timer_ringing, wake_sound;
 namespace media_player { enum State { MEDIA_PLAYER_STATE_ANNOUNCING }; }
 struct Player { int state{media_player::MEDIA_PLAYER_STATE_ANNOUNCING}; } external_media_player;
@@ -49,6 +51,7 @@ struct RestartScript {
 } assist_live_restart_reply_wake;
 struct CancelScript { void execute() { cancel(); } } assist_live_cancel_reply_wake;
 template<typename F> void wait_for_idle(F ready) {
+  const auto detected_at = now;
   assert(!ready() && "stop must remain asynchronous in test");
   if (!injection.empty()) {
     now += 100;
@@ -59,13 +62,14 @@ template<typename F> void wait_for_idle(F ready) {
       detect(injection);
     }
   }
-  now = 400;
+  now = detected_at + 300;
+  if (tick_lag) tick_lag = 37;
   if (!expired) {
     va.running = false;
     announcing = false;
     external_media_player.state = -1;
   } else {
-    now = 600;
+    now = detected_at + 500;
   }
 }
 void log_line(const char *, const char *format, ...) {
@@ -85,6 +89,7 @@ void detect(const std::string &wake_word) { HANDLER_BODY }
 std::string scenario;
 void chime_wait() {
   now += 300;
+  if (tick_lag) tick_lag = 73;
   if (scenario == "timer_during_chime") timer_ringing.state = true;
   if (scenario == "announcement_during_chime") {
     announcing = true;
@@ -94,7 +99,12 @@ void chime_wait() {
 int main(int argc, char **argv) {
   assert(argc == 2);
   scenario = argv[1];
-  if (scenario == "chime" || scenario.find("during_chime") != std::string::npos)
+  const bool split_clock = scenario.find("split_clock") == 0;
+  if (split_clock) tick_lag = 13;
+  if (scenario == "split_clock_wrap") now = (uint64_t{1} << 32) - 16;
+  const auto detected_at = static_cast<uint32_t>(now);
+  if (scenario == "chime" || scenario == "split_clock_chime" ||
+      scenario.find("during_chime") != std::string::npos)
     wake_sound.state = true;
   if (scenario == "timer") timer_ringing.state = true;
   if (scenario == "muted") master_mute_switch.state = true;
@@ -106,15 +116,15 @@ int main(int argc, char **argv) {
   if (scenario == "pending_wake") injection = "Hey Jarvis";
   if (scenario == "pending_mute") injection = "mute";
   detect(scenario == "stop" ? "Stop" : "Okay Nabu");
-  assert(!events.empty() && events.front() == "wake" && wake_times.front() == 100 && "timing first at detection");
-  const bool starts = scenario == "reply" || scenario == "pending_wake" || scenario == "chime";
+  assert(!events.empty() && events.front() == "wake" && wake_times.front() == detected_at && "timing first at detection");
+  const bool starts = scenario == "reply" || scenario == "pending_wake" || scenario == "chime" || split_clock;
   assert(va.starts == unsigned(starts) && "only named reply wake starts a replacement turn");
   if (starts) {
     assert(events[1] == "capture" && events[2] == "stop");
     const auto arm = std::find(events.begin(), events.end(), "arm");
     assert(arm != events.end() && *(arm + 1) == "start" && *(arm + 2) == "bound");
     assert(std::find(logs.begin(), logs.end(), "Reply wake detection_to_idle_ms=300") != logs.end());
-    assert(std::find(logs.begin(), logs.end(), scenario == "chime" ?
+    assert(std::find(logs.begin(), logs.end(), wake_sound.state ?
                     "Reply wake detection_to_start_ms=600" : "Reply wake detection_to_start_ms=300") != logs.end());
   }
   if (scenario == "stop" || scenario == "listening" || scenario == "thinking")

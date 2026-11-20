@@ -34,7 +34,7 @@ script:
     then:
       - lambda: |-
           id(reply_wake_pending) = true;
-          id(reply_wake_detected_ms) = millis();
+          id(reply_wake_detected_ms) = uint32_t(millis_64());
           ${assist_live_reply_capture}
       - voice_assistant.stop:
       - wait_until:
@@ -61,7 +61,7 @@ script:
           then:
             - lambda: |-
                 ESP_LOGI("assist_live.reply_wake", "Reply wake detection_to_idle_ms=%u",
-                         unsigned(millis() - id(reply_wake_detected_ms)));
+                         unsigned(uint32_t(millis_64()) - id(reply_wake_detected_ms)));
             - if:
                 condition:
                   switch.is_on: wake_sound
@@ -86,7 +86,7 @@ script:
                 then:
                   - lambda: |-
                       ESP_LOGI("assist_live.reply_wake", "Reply wake detection_to_start_ms=%u",
-                               unsigned(millis() - id(reply_wake_detected_ms)));
+                               unsigned(uint32_t(millis_64()) - id(reply_wake_detected_ms)));
                   - lambda: ${assist_live_wake_arm}
                   - voice_assistant.start:
                       wake_word: !lambda return wake_word;

@@ -124,6 +124,9 @@ def reply_barge_native(tmp_path_factory):
         "chime",
         "timer_during_chime",
         "announcement_during_chime",
+        "split_clock",
+        "split_clock_chime",
+        "split_clock_wrap",
     ],
 )
 def test_reply_stop_then_start(reply_barge_native, scenario):

@@ -35,8 +35,7 @@ script:
       - lambda: |-
           const bool was_announcing = id(reply_wake_window).announcing();
           const bool started = id(reply_wake_window).observe(uint32_t(millis_64()),
-              id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING,
-              id(va).is_running());
+              id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING);
           id(assist_live_apply_wake_cutoffs).execute();
           if (started) id(assist_live_reply_wake_tail).stop();
           else if (was_announcing && !id(reply_wake_window).announcing())
@@ -52,6 +51,5 @@ script:
             - delay: !lambda return assist_live::ReplyWakeWindow::REPLY_CHECK_MS;
             - lambda: |-
                 id(reply_wake_window).observe(uint32_t(millis_64()),
-                    id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING,
-                    id(va).is_running());
+                    id(external_media_player).state == media_player::MEDIA_PLAYER_STATE_ANNOUNCING);
             - script.execute: assist_live_apply_wake_cutoffs

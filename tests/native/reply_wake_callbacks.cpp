@@ -95,7 +95,6 @@ int main(int argc, char **argv) {
     now = 1900;
     if (scenario == "turn_in_tail") {
       va.running = true;
-      reply_wake_window.listening(now);
     }
     now = 2499;
     []() { EXPIRE_BODY }();
@@ -106,6 +105,7 @@ int main(int argc, char **argv) {
       assist_live_apply_wake_cutoffs.execute();
     }
     assert(okay_nabu.cutoff == 217 && "an early check must retry and close inside the 25 ms bound");
+    if (scenario == "turn_in_tail") assert(va.running);
     assert(logs.size() == 6 && "a listening turn must not keep the old window open");
     std::cout << "PASS " << scenario << " restores selected cutoffs\n";
     return 0;

@@ -19,13 +19,12 @@ public:
     apply_("select changed");
   }
 
-  bool observe(uint32_t now, bool announcing, bool) {
+  bool observe(uint32_t now, bool announcing) {
     const bool started = announcing && !announcing_;
     announcing_ = announcing;
     if (started) {
       active_ = true;
       tail_ = false;
-      listening_turn_ = false;
       apply_("reply window start");
     }
     if (active_ && !announcing_) {
@@ -42,19 +41,8 @@ public:
     return started;
   }
 
-  void listening(uint32_t now) {
-    // A follow-up turn can start without an intervening VA IDLE state.
-    listening_turn_ = true;
-    observe(now, announcing_, false);
-  }
-  void expire_wait() {
-    active_ = false;
-    tail_ = false;
-    apply_("reply window end");
-  }
   bool announcing() const { return announcing_; }
   bool active() const { return active_; }
-  bool listening_turn() const { return listening_turn_; }
   std::array<uint8_t, 3> cutoffs() const { return applied_; }
   const char *reason() const { return reason_; }
   bool take_change() {
@@ -78,7 +66,7 @@ protected:
   std::array<uint8_t, 3> applied_{};
   uint32_t idle_ms_{0};
   uint8_t selected_{0};
-  bool active_{false}, announcing_{false}, tail_{false}, listening_turn_{false}, changed_{false};
+  bool active_{false}, announcing_{false}, tail_{false}, changed_{false};
   const char *reason_{"select changed"};
 };
 }
