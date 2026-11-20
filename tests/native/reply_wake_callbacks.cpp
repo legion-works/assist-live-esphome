@@ -49,12 +49,15 @@ void log_line(const char *, const char *format, ...) {
 }
 #define id(value) value
 #define ESP_LOGI log_line
+#define ESP_LOGW log_line
 
 void select_value(const std::string &x) {
   SELECT_BODY
 }
 
-int main() {
+int main(int argc, char **argv) {
+  assert(argc == 2);
+  const std::string scenario = argv[1];
   assist_live_apply_wake_cutoffs.body = []() { APPLY_BODY };
   assist_live_update_reply_wake.body = []() { UPDATE_BODY };
   for (const auto *option : {"Moderately sensitive", "Slightly sensitive", "Very sensitive", "Moderately sensitive"})
@@ -70,11 +73,32 @@ int main() {
   select_value("Slightly sensitive");
   assert(external_media_player.callbacks.size() == 1 && logs.size() == 3);
   now = 500;
+  if (scenario == "timeout") {
+    external_media_player.publish(media_player::MEDIA_PLAYER_STATE_IDLE);
+    assert(va.running && assist_live_reply_wake_tail.executions == 1);
+    logs.clear();
+    now = 30500;
+    []() { TIMEOUT_BODY }();
+    assert(okay_nabu.cutoff == 217 && hey_jarvis.cutoff == 247 && hey_mycroft.cutoff == 253 &&
+           "timeout must apply selected cutoffs before the tail delay");
+    assert(logs.size() == 4 && "one timeout warning and one cutoff log per model");
+    assert(logs[0] == "VA idle wait expired; restore selected cutoffs");
+    assert(logs[1] == "okay_nabu reason=reply window end cutoff=217");
+    assert(logs[2] == "hey_jarvis reason=reply window end cutoff=247");
+    assert(logs[3] == "hey_mycroft reason=reply window end cutoff=253");
+    now += esphome::assist_live::ReplyWakeWindow::REPLY_TAIL_MS;
+    []() { EXPIRE_BODY }();
+    assist_live_apply_wake_cutoffs.execute();
+    assert(logs.size() == 4 && "the later tail step must not repeat timeout cutoff logs");
+    std::cout << "PASS timeout restores selected cutoffs exactly once\n";
+    return 0;
+  }
+  assert(scenario == "edges");
   va.running = false;
   external_media_player.publish(media_player::MEDIA_PLAYER_STATE_IDLE);
   assert(assist_live_reply_wake_tail.executions == 1);
   assert(logs.size() == 3 && okay_nabu.cutoff == 143);
-  now = 1500;
+  now = 2500;
   []() { EXPIRE_BODY }();
   assist_live_apply_wake_cutoffs.execute();
   assert(logs.size() == 6 && "one log per model at window end");

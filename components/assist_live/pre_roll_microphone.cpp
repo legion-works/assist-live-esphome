@@ -38,8 +38,10 @@ void PreRollMicrophone::update_mute_() {
     return;
   effective_mute_ = muted;
   buffer_->mute(muted);
-  if (muted)
+  if (muted) {
     arm_pending_ = false;
+    reply_pending_ = false;
+  }
   if (listeners_ != 0)
     passthrough_ = true;
 }
@@ -91,7 +93,17 @@ void PreRollMicrophone::wake_detected() {
     return;
   update_mute_();
   auto *va = voice_assistant::global_voice_assistant;
-  if (va == nullptr || va->is_running() || turn_active_ || effective_mute_ || wake_sound_->state)
+  if (va == nullptr || va->is_running() || turn_active_ || effective_mute_)
+    return;
+  if (reply_pending_) {
+    reply_pending_ = false;
+    if (wake_sound_->state) {
+      arm_pending_ = false;
+      buffer_->stop();
+    }
+    return;
+  }
+  if (wake_sound_->state)
     return;
   arm_ms_ = AssistLiveComponent::monotonic_ms();
   arm_pending_ = true;
@@ -99,6 +111,32 @@ void PreRollMicrophone::wake_detected() {
   passthrough_ = false;
   buffer_->arm(arm_ms_);
   ESP_LOGD(TAG, "Wake detection device_ms=%" PRIu64, buffer_->detection_ms());
+}
+
+void PreRollMicrophone::capture_reply_wake() {
+  finish_turn();
+  LockGuard lock(mutex_);
+  if (!buffer_)
+    return;
+  update_mute_();
+  auto *va = voice_assistant::global_voice_assistant;
+  if (va == nullptr || !va->is_running() || effective_mute_)
+    return;
+  arm_ms_ = AssistLiveComponent::monotonic_ms();
+  arm_pending_ = reply_pending_ = true;
+  arm_expired_ = passthrough_ = false;
+  buffer_->arm(arm_ms_);
+  ESP_LOGD(TAG, "Wake detection device_ms=%" PRIu64, buffer_->detection_ms());
+}
+
+bool PreRollMicrophone::reply_wake_ready() {
+  LockGuard lock(mutex_);
+  if (!buffer_)
+    return false;
+  update_mute_();
+  auto *va = voice_assistant::global_voice_assistant;
+  return reply_pending_ && arm_pending_ && !effective_mute_ && va != nullptr && !va->is_running() &&
+         AssistLiveComponent::monotonic_ms() - arm_ms_ <= PreRollBuffer::MAX_ARM_TO_START_MS;
 }
 
 void PreRollMicrophone::wake_started() {
@@ -229,6 +267,7 @@ void PreRollMicrophone::log_turn_() {
 }
 
 void PreRollMicrophone::stop() {
+  bool preserve_reply = false;
   {
     LockGuard lock(mutex_);
     if (listeners_ == 0 || --listeners_ != 0)
@@ -237,8 +276,11 @@ void PreRollMicrophone::stop() {
     state_ = microphone::STATE_STOPPED;
     fast_loop_.stop();
     passthrough_ = false;
+    // The wake detector keeps the physical input active during the reply stop.
+    preserve_reply = reply_pending_;
   }
-  clear();
+  if (!preserve_reply)
+    clear();
 }
 
 void PreRollMicrophone::finish_turn() {
@@ -275,7 +317,7 @@ void PreRollMicrophone::clear() {
   LockGuard lock(mutex_);
   if (buffer_)
     buffer_->stop();
-  arm_pending_ = wake_bound_ = passthrough_ = false;
+  arm_pending_ = wake_bound_ = passthrough_ = reply_pending_ = false;
 }
 
 void PreRollMicrophone::set_privacy_mute(bool muted) {

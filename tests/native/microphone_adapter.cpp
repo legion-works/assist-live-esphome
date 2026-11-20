@@ -50,6 +50,8 @@ public:
   size_t historical_frames() const { return buffer_->history_remaining(); }
   size_t queued_frames() const { return buffer_->pending(); }
   unsigned listeners() const { return listeners_; }
+  uint64_t detection_ms() const { return buffer_->detection_ms(); }
+  size_t trimmed_frames() const { return buffer_->trimmed_frames(); }
 };
 
 template<typename T, typename = void> struct HasTurnHooks : std::false_type {};
@@ -409,7 +411,108 @@ static void feedback_drain_model(int drain_mode) {
 }
 #endif
 
+template<typename T, typename = void> struct HasReplyWake : std::false_type {};
+template<typename T> struct HasReplyWake<T, std::void_t<decltype(std::declval<T>().capture_reply_wake()),
+    decltype(std::declval<T>().reply_wake_ready())>> : std::true_type {};
+
+template<typename T> static void reply_wake_history(int history_ms) {
+  if constexpr (!HasReplyWake<T>::value) {
+    assert(false && "reply wake must retain history across stop and idle");
+  } else {
+    PhysicalMicrophone physical;
+    switch_::Switch wake_sound;
+    TimingComponent parent;
+    voice_assistant::VoiceAssistant va;
+    voice_assistant::global_voice_assistant = &va;
+    T mic;
+    mic.set_source(&physical);
+    mic.set_wake_sound(&wake_sound);
+    mic.set_parent(&parent);
+    mic.set_length_ms(history_ms);
+    mic.setup();
+    parent.set_pre_roll(&mic);
+    parent.setup();
+    mic.start();
+    va.running = true;
+    std::vector<StereoFrame> received;
+    mic.add_data_callback([&](const auto &data) {
+      const auto first = received.size();
+      received.resize(first + data.size() / sizeof(StereoFrame));
+      std::memcpy(received.data() + first, data.data(), data.size());
+    });
+    auto feed = [&](int first, int count = 256) {
+      std::vector<uint8_t> data(count * sizeof(StereoFrame));
+      for (int i = 0; i < count; ++i) {
+        StereoFrame frame{first + i, -first - i};
+        std::memcpy(data.data() + i * sizeof(frame), &frame, sizeof(frame));
+      }
+      physical.send(data);
+    };
+    const int lookback = history_ms * 16;
+    feed(0, lookback);
+    received.clear();
+    set_time(100);
+    parent.emit_event(Stage::WAKE_DETECTED, 100);
+    mic.capture_reply_wake();
+    assert(!mic.reply_wake_ready() && "busy VA cannot consume pending history");
+    feed(lookback, 2400);
+    mic.stop();
+    feed(lookback + 2400, 2400);
+    assert(received.empty() && "stop wait must not send command audio to the old turn");
+    set_time(400);
+    va.running = false;
+    mic.finish_turn_if_idle();
+    assert(mic.reply_wake_ready() && "idle VA can consume pending reply wake");
+    mic.wake_detected();
+    assert(mic.detection_ms() == 100 && "reply wake keeps original detection time at pre-start arm");
+    va.running = true;
+    mic.wake_started();
+    mic.start();
+    mic.begin_turn();
+    parent.command_stream_start();
+    feed(lookback + 4800);
+    set_time(416);
+    mic.listening();
+    const int history_frames = lookback + 5056;
+    feed(history_frames);
+    const int trimmed = std::max(0, history_frames - 16000);
+    const int output_frames = history_frames - trimmed + 256;
+    for (int i = 0; i < 300 && mic.queued_frames() != 0; ++i) {
+      mic.loop();
+      advance_time(8);
+    }
+    assert(received.size() == static_cast<size_t>(output_frames) && "reply turn keeps lookback, stop bridge, start bridge and live audio");
+    for (int i = 0; i < output_frames; ++i)
+      assert(received[i].left == i + trimmed && received[i].right == -i - trimmed && "reply wake has no missing or duplicate frame");
+    assert(mic.pre_roll_ms() == static_cast<uint32_t>((history_frames - trimmed) / 16) &&
+           "reply wake history includes the 300 ms stop-to-start bridge");
+    assert(mic.trimmed_frames() == static_cast<size_t>(trimmed) && "reply wake counts oldest-end trim at 1000 ms cap");
+    const auto detection = parent.take();
+    assert(detection.stage == Stage::WAKE_DETECTED && detection.device_ms == 100);
+    const auto opened = parent.take();
+    assert(opened.stage == Stage::MIC_OPEN && opened.device_ms == 400);
+    mic.finish_turn();
+    va.running = true;
+    feed(2000);
+    mic.capture_reply_wake();
+    mic.set_privacy_mute(true);
+    va.running = false;
+    assert(!mic.reply_wake_ready() && "mute cancels pending reply history");
+    mic.set_privacy_mute(false);
+    assert(!mic.reply_wake_ready() && "unmute cannot revive pending reply history");
+    va.running = true;
+    mic.capture_reply_wake();
+    mic.clear();
+    va.running = false;
+    assert(!mic.reply_wake_ready() && "error or disconnect cancels pending reply history");
+    voice_assistant::global_voice_assistant = nullptr;
+    std::cout << "PASS reply wake history\n";
+  }
+}
+
 int main() {
+  reply_wake_history<TestMicrophone>(16);
+  reply_wake_history<TestMicrophone>(900);
 #ifdef USE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK
   feedback_drain_model(0);
   feedback_drain_model(1);

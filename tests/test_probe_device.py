@@ -231,16 +231,30 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
             "assist_live_apply_wake_cutoffs",
             "assist_live_update_reply_wake",
             "assist_live_reply_wake_tail",
+            "assist_live_cancel_reply_wake",
+            "assist_live_restart_reply_wake",
         }
     ]
     production["globals"] = [
-        item for item in production["globals"] if item["id"] != "reply_wake_window"
+        item
+        for item in production["globals"]
+        if item["id"]
+        not in {"reply_wake_window", "reply_wake_pending", "reply_wake_detected_ms"}
     ]
     if not production["globals"]:
         del production["globals"]
     production["voice_assistant"]["on_listening"] = stock_probe["voice_assistant"][
         "on_listening"
     ]
+    for trigger in ("on_error", "on_client_disconnected"):
+        production["voice_assistant"][trigger] = stock_probe["voice_assistant"][trigger]
+    production["switch"] = stock_probe["switch"]
+    for key, value in {
+        "assist_live_reply_capture": "return;",
+        "assist_live_reply_ready": "return true;",
+        "assist_live_reply_cancel": "return;",
+    }.items():
+        assert production["substitutions"].pop(key) == value
     for section in stock_probe:
         if section not in {
             "substitutions",

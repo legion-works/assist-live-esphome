@@ -28,6 +28,8 @@ public:
   void set_length_ms(uint32_t value) { length_ms_ = value; }
   void set_parent(AssistLiveComponent *value) { parent_ = value; }
   void wake_detected();
+  void capture_reply_wake();
+  bool reply_wake_ready();
   void wake_started();
   void begin_turn();
   void finish_turn();
@@ -64,6 +66,7 @@ protected:
   uint64_t arm_ms_{0}, arm_to_start_ms_{0};
   uint32_t last_pre_roll_ms_{0};
   bool arm_pending_{false}, arm_expired_{false};
+  bool reply_pending_{false};
   bool turn_active_{false}, wake_bound_{false}, replay_started_{false};
   bool privacy_mute_{false}, effective_mute_{false}, passthrough_{false};
 #ifdef USE_ASSIST_LIVE_DIAGNOSTICS

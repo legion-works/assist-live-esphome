@@ -50,9 +50,11 @@ The example uses them as the anonymous device identifier, 32-byte hexadecimal HM
 It selects UDP timing events. No device trial or transport selection result is available.
 
 The shared wake overlay uses the stock Very sensitive cutoffs during replies and announcements.
-It keeps these cutoffs for 1000 ms after playback ends and VA goes to `IDLE`.
+It keeps these cutoffs for 2000 ms after playback ends and VA goes to `IDLE`.
 Then it uses the current sensitivity selection again. A follow-up listening turn also starts this tail.
-The wake handler stops an active reply without starting a new command.
+
+During a VA reply, a named wake stops the reply and starts a new wake turn after VA goes to `IDLE`.
+The wait has a 500 ms limit. Stop, timer, mute, and other busy-state decisions stay unchanged.
 See [the wake policy](ARCHITECTURE.md#reply-wake-window) for limits and logs.
 
 ## Documentation

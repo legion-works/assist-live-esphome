@@ -7,6 +7,7 @@
 namespace esphome::assist_live {
 class ReplyWakeWindow {
 public:
+  static constexpr uint32_t REPLY_TAIL_MS = 2000;
   void select(const std::string &option) {
     if (option == "Slightly sensitive")
       selected_ = 0;
@@ -31,7 +32,7 @@ public:
         tail_ = true;
         idle_ms_ = now;
       }
-      if (tail_ && static_cast<uint32_t>(now - idle_ms_) >= 1000) {
+      if (tail_ && static_cast<uint32_t>(now - idle_ms_) >= REPLY_TAIL_MS) {
         active_ = false;
         tail_ = false;
         apply_("reply window end");

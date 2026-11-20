@@ -34,15 +34,24 @@ No hardware trial result or transport selection is available.
 `examples/wake-word.yaml` applies the stock Very sensitive cutoffs while the media player announces.
 This includes voice-assistant replies and standalone announcements, not ordinary media playback.
 The cutoffs are 143 for Okay Nabu, 212 for Hey Jarvis, and 237 for Hey Mycroft.
-The Stop word model, timer functions, mute, and the stop-on-wake branch stay unchanged.
-A wake during a reply stops that reply. It does not start a new command.
+
+The Stop word model, timer functions, and mute decisions stay unchanged.
+A named wake during a VA reply stops that reply and starts a new wake turn after VA goes to `IDLE`.
+The handler identifies a VA reply with three conditions: VA runs, the stock phase is replying, and the media player announces.
+Stop is not a named wake for this decision.
+
+The stock `is_running` condition includes all non-`IDLE` states, also listening, thinking, and start/stop states.
+These other states keep the stock stop-only decision. A standalone announcement also keeps its stop-only decision.
 
 The sensitivity select keeps the current option, also after a change during the window.
 Its first value callback adds one media-player state subscriber.
 The subscriber does not replace the stock media or boot `actions`.
 `ReplyWakeWindow` supplies one local cutoff table. A resolved-config test compares it with the pinned stock select.
 
-After playback ends, one restartable script waits for VA `IDLE`, then waits 1000 ms before it uses the current option again.
+After playback ends, one restartable script waits for VA `IDLE`.
+Then it waits 2000 ms before it uses the current option again.
+`ReplyWakeWindow::REPLY_TAIL_MS` supplies this interval to the policy and the YAML timer.
+
 The wait runs only in a reply window. VA `on_idle` fires only in continuous mode in the pinned ESPHome version.
 A follow-up `on_listening` signal releases the previous reply without waiting for the new turn to end.
 A new announcement cancels the previous tail.
@@ -55,6 +64,26 @@ Each applied cutoff change logs the model, integer value, and `reason` at INFO l
 The `reason` values are `reply window start`, `reply window end`, and `select changed`.
 This policy increases sensitivity only in the reply window. Incorrect detections can stop replies.
 Device tests must measure wake detection and the `false-accept rate`. Native tests do not prove acoustic performance.
+
+## Reply wake restart
+
+The wake timing event comes first, before stop, sound, or wait `actions`.
+One pending request keeps its detection time and captures microphone history before it stops the reply.
+The wait for VA and the media player to stop has a 500 ms limit.
+ESPHome stops the media player, then changes `STREAMING_RESPONSE` to `RESPONSE_FINISHED` and `IDLE` in subsequent loop operations.
+This is not a fixed-duration stop. If the wait expires, the script logs it, clears the pending history, and does not start.
+
+At `IDLE`, the usual pre-start arm uses the saved detection time and audio.
+The new turn gets the lookback before detection and the continuous bridge through stop and start.
+The same 1000 ms total limit applies. The component counts each frame that it removes from the oldest end.
+`pre_roll_ms` reports only history actually sent to VA.
+With the wake sound on, the turn gets the same sound interval and no history, as in an `IDLE` wake turn.
+
+A second named wake during the wait does not queue one more turn.
+Stop during the wait cancels the pending request and its history, then follows the stock stop branch.
+Mute, error, and disconnect also cancel the pending request.
+Each restart logs `detection_to_idle_ms` and `detection_to_start_ms`.
+See [microphone history](docs/pre-roll.md#reply-stop-and-restart) for the buffer rules.
 
 Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word during a reply](https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll).
 

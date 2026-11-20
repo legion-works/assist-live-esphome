@@ -2174,11 +2174,72 @@ git diff --check
 
 The mandatory gate includes Python 3.14 and 3.12, all compile targets, and the component warning checks.
 The canonical privacy checker also runs directly because a worktree does not necessarily have the adjacent integration checkout.
+
 Result: `task check` exited 0. Python 3.14 and 3.12 each gave `240 passed`.
 UDP, WebSocket, pre-roll, and the transport probe each gave `new_warnings=0`.
-The direct privacy check gave `PASS public data matches=0` with history and the private denylist.
+The canonical privacy check gave `PASS public data matches=0` with history and the private denylist.
+
 The private probe keeps 200 ms of history, buffer feedback, environment-based API encryption, and ESPHome OTA.
 The probe image stays external to the repository. No upload, device access, or audio playback is part of this change.
 Native tests and compilation do not prove device wake precision or the `false-accept rate`.
+
+Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word during a reply](https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll).
+
+## Reply wake restart and 2000 ms tail
+
+Date: 2026-11-20 (UTC).
+
+`ReplyWakeWindow::REPLY_TAIL_MS` supplies the 2000 ms tail to the policy and the YAML timer.
+A named wake during VA reply playback stops the reply and starts a new wake turn after VA goes to `IDLE`.
+The stock phase must be replying, VA must run, and the media player must announce.
+The other busy states keep the stock stop-only branch.
+Stop, timer, mute, and standalone announcement decisions stay unchanged.
+
+The reply-stop wait has a 500 ms limit. A timeout logs the failure and does not start a new turn.
+Stop or mute during the wait cancels the pending request and its history.
+Error and disconnect also cancel it. A second named wake does not queue one more request.
+
+The timing event comes first. Each restart logs `detection_to_idle_ms` and `detection_to_start_ms`.
+
+The new turn keeps the lookback before detection and the bridge through stop and start.
+The requested microphone stop keeps the pending capture while the physical wake detector keeps capture active.
+The pre-start arm uses the initial detection time without selecting history again.
+The same 1000 ms total limit applies, with counted removal from the oldest end.
+`pre_roll_ms` counts only history actually sent to VA.
+
+RED on the previous firmware found the 1000 ms tail, missing restart, and missing stop-to-start history functions.
+The targeted GREEN suite gave `31 passed`.
+Native tests use a 300 ms stop interval and numbered stereo frames, with short and 900 ms lookbacks.
+They prove continuous ordering at detection and start, and the total history limit with counted removal.
+Resolved-config tests compare the complete handler with pinned stock after they check only the documented differences.
+
+Three scratch changes compiled, then stopped named tests:
+
+- Tail back to 1000 ms: `test_native_reply_wake[tail_2000_ms]`.
+- No `IDLE` wait: `test_reply_stop_then_start[reply]`.
+- No pending history: `test_native_microphone_adapter_callback_allocations[False-False]`.
+
+Review found a missing test for applying cutoffs at the 30 s VA wait timeout.
+The callbacks harness runs the actual recovery lambda while VA stays busy.
+It checks selected cutoffs before the tail interval, one expiry warning, and one cutoff log for each model.
+The subsequent tail step must not log the same changes again.
+The config test also checks these complete steps.
+
+The reviewer's omitted cutoff update gave `2 passed` with the previous tests.
+With the new tests the same change gives `2 failed`: the native timeout assertion and the config assertion.
+The reply-window test module gives `15 passed` after this test-only repair.
+The firmware source and the private images do not change for this repair.
+
+Acceptance uses `task check`, the canonical public-tree checker with history and the private denylist, STE, and `git diff --check`.
+Each command uses the external `idle-run.sh` wrapper.
+
+Result after the review test repair: `task check` exited 0.
+Python 3.14 and 3.12 each gave `252 passed`.
+UDP, WebSocket, pre-roll, and the transport probe each gave `new_warnings=0`.
+The canonical privacy check gave `PASS public data matches=0` with history and the private denylist.
+
+The private probes keep the previous settings and ESPHome OTA. The second private variant changes only the lookback to 800 ms.
+No upload, device access, or audio playback is part of these checks.
+Native tests do not prove capture continuity or acoustic results on a device.
 
 Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word during a reply](https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll).

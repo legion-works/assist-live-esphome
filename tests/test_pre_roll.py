@@ -302,6 +302,8 @@ def test_resolved_feedback_option_controls_generated_defines(tmp_path, feedback)
 
 
 def assert_stock_wake_handler(handler, stock_handler, arm):
+    import copy
+
     assert handler[0] == {
         "assist_live.emit_event": {
             "id": "assist_live_component",
@@ -335,7 +337,47 @@ def assert_stock_wake_handler(handler, stock_handler, arm):
             return {key: without_arm(item) for key, item in value.items()}
         return value
 
-    normalized = without_arm(handler[1:])
+    assert handler[1] == {
+        "if": {
+            "condition": {
+                "lambda": 'return id(reply_wake_pending) && wake_word == "Stop";'
+            },
+            "then": [{"script.execute": {"id": "assist_live_cancel_reply_wake"}}],
+        }
+    }, "pending Stop only cancels the queued restart"
+    normalized = without_arm(copy.deepcopy(handler[2:]))
+    outer = normalized[0]["if"]
+    assert outer["condition"] == {
+        "and": [
+            {"lambda": "return !id(reply_wake_pending);"},
+            {"switch.is_off": {"id": "master_mute_switch"}},
+        ]
+    }, "pending named wake must not restart again"
+    outer["condition"] = {"switch.is_off": {"id": "master_mute_switch"}}
+    busy = outer["then"][0]["if"]["else"][0]["if"]
+    assert busy["condition"] == {"voice_assistant.is_running": {}}
+    assert busy["then"] == [
+        {
+            "if": {
+                "condition": {
+                    "lambda": 'return wake_word != "Stop"\n'
+                    "    && id(voice_assistant_phase) == 5\n"
+                    "    && id(external_media_player).state == "
+                    "media_player::MEDIA_PLAYER_STATE_ANNOUNCING;"
+                },
+                "then": [
+                    {
+                        "script.execute": {
+                            "id": "assist_live_restart_reply_wake",
+                            "wake_word": "return wake_word;",
+                        }
+                    }
+                ],
+                "else": [{"voice_assistant.stop": {}}],
+            }
+        }
+    ], "only the reply-playing busy branch can start a new turn"
+    busy["then"] = [{"voice_assistant.stop": {}}]
     assert normalized == stock_handler, (
         "stock wake handler drift: update the shared handler for the package pin"
     )
@@ -441,8 +483,30 @@ def test_resolved_pre_roll_rewires_only_va_and_preserves_stock_actions(tmp_path)
     assert [
         source["channels"] for source in enabled["voice_assistant"]["microphone"]
     ] == [[0], [1]]
-    for key in ("speaker", "media_player", "script", "select", "light"):
+    for key in ("speaker", "media_player", "select", "light"):
         assert enabled[key] == baseline[key], key
+    replacements = {
+        "id(pre_roll_mic).capture_reply_wake();": ("return;", 1),
+        "return id(pre_roll_mic).reply_wake_ready();": ("return true;", 2),
+        "id(pre_roll_mic).clear();": ("return;", 1),
+        "id(pre_roll_mic).wake_detected();": ("return;", 1),
+        "id(pre_roll_mic).wake_started();": ("return;", 1),
+    }
+    counts = dict.fromkeys(replacements, 0)
+
+    def without_reply_history(value):
+        if isinstance(value, list):
+            return [without_reply_history(item) for item in value]
+        if isinstance(value, dict):
+            return {key: without_reply_history(item) for key, item in value.items()}
+        if isinstance(value, str):
+            for before, (after, _) in replacements.items():
+                counts[before] += value.count(before)
+                value = value.replace(before, after)
+        return value
+
+    assert without_reply_history(enabled["script"]) == baseline["script"]
+    assert counts == {before: count for before, (_, count) in replacements.items()}
     assert enabled["micro_wake_word"]["models"] == baseline["micro_wake_word"]["models"]
     expected = baseline["voice_assistant"]["microphone"]
     for source in expected:

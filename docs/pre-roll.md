@@ -58,14 +58,15 @@ After an ESPHome upgrade, the resolved-config and generated-code checks must giv
 
 ## Turn selection
 
-The overlay keeps the stock mute, timer, stop, announcement, and wake-sound decisions.
+The overlay keeps the stock mute, timer, Stop, standalone announcement, and wake-sound decisions.
+Only a named wake during VA reply playback changes from stop-only to stop and restart.
 It puts the timing `action` first, before the wake sound and its 300 ms interval.
 It adds an arm call immediately before `voice_assistant.start`, after that interval.
 One call immediately after that start connects the arm to the wake request.
 The `then:` mapping replaces the stock list.
 
-A resolved-config test removes only these two calls and the first timing `action`.
-It then compares the complete handlers.
+A resolved-config test checks the reply-only branch and pending-request guards before it removes those documented changes.
+It then removes the two arm calls and the timing `action`, and compares the complete stock handlers.
 
 A button, follow-up, or announcement does not arm history.
 The wake-sound switch must be off to make an arm.
@@ -91,6 +92,31 @@ The log field `arm_to_start_ms` gives detection-to-gate time, not detection-to-m
 Mute clears the PCM queue and the arm. The component keeps no new history while mute is active.
 Unmute cannot use previous history.
 Stop, error, disconnect, and shutdown clear the queue.
+
+## Reply stop and restart
+
+A named wake during a VA reply captures the lookback at the detection time, before it stops the reply.
+The physical wake detector keeps the shared microphone active while VA stops.
+The component appends new frames to the same ring during this interval.
+The requested microphone stop keeps only this pending reply capture. Other stop operations clear the queue as before.
+
+After VA and the announcement stop, the usual arm immediately before `voice_assistant.start` uses that capture without a second history selection.
+The post-start call connects it to the new wake turn.
+Thus, the turn keeps the initial detection time, the lookback, and the bridge across stop and start.
+The turn has no duplicate frame at detection or start.
+The replay gate, 1000 ms detection-to-gate limit, 1000 ms total history limit, and oldest-end removal counters stay unchanged.
+
+The reply-stop wait has a 500 ms limit. A timeout logs the failure and cancels the request without a start.
+Stop or mute during the wait also cancels the request and clears its history.
+A second named wake during the wait does not make one more request.
+The logs give `detection_to_idle_ms` and `detection_to_start_ms` for each restart.
+The `pre_roll_ms` value counts only history actually sent, after the oldest-end removal.
+
+Native tests use a 300 ms stop interval and numbered stereo frames.
+They check the initial detection time, no missing or duplicate frames, the two boundary points, and counted oldest-end removal at the total limit.
+These tests do not measure capture continuity on the device.
+
+Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word during a reply](https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll).
 
 ## Logical turn boundaries
 

@@ -32,7 +32,7 @@ def reply_wake_native(tmp_path_factory):
     "scenario",
     [
         "window_start_end",
-        "tail_1000_ms",
+        "tail_2000_ms",
         "select_inside_window",
         "very_selected",
         "mute_during_window",
@@ -113,6 +113,7 @@ def assert_reply_wake_wiring(stock, config):
     assert "take_change()" in apply
     tail = scripts["assist_live_reply_wake_tail"]
     assert tail["mode"] == "restart"
+    assert len(tail["then"]) == 5
     assert tail["then"][0] == {
         "wait_until": {
             "condition": {
@@ -124,7 +125,29 @@ def assert_reply_wake_wiring(stock, config):
             "timeout": "30s",
         }
     }
-    assert tail["then"][2] == {"delay": "1000ms"}
+    assert tail["then"][2] == {
+        "delay": "return assist_live::ReplyWakeWindow::REPLY_TAIL_MS;"
+    }
+    assert tail["then"][1] == {
+        "lambda": "if (id(va).is_running() && "
+        "!id(reply_wake_window).listening_turn()) {\n"
+        '  ESP_LOGW("assist_live.reply_wake", '
+        '"VA idle wait expired; restore selected cutoffs");\n'
+        "  id(reply_wake_window).expire_wait();\n"
+        "  id(assist_live_apply_wake_cutoffs).execute();\n"
+        "} else {\n"
+        "  id(reply_wake_window).observe(millis(), false, false);\n"
+        "}"
+    }, "timeout must restore and apply selected cutoffs immediately"
+    assert tail["then"][3] == {
+        "lambda": "id(reply_wake_window).observe(millis(),\n"
+        "    id(external_media_player).state == "
+        "media_player::MEDIA_PLAYER_STATE_ANNOUNCING,\n"
+        "    id(va).is_running());"
+    }
+    assert tail["then"][4] == {
+        "script.execute": {"id": "assist_live_apply_wake_cutoffs"}
+    }, "tail completion must apply selected cutoffs"
     assert "interval" not in config
     before_select = next(
         item for item in stock["select"] if item["id"] == "wake_word_sensitivity"
@@ -156,14 +179,27 @@ def assert_reply_wake_wiring(stock, config):
         {"lambda": "id(reply_wake_window).listening(millis());"},
         {"script.execute": {"id": "assist_live_apply_wake_cutoffs"}},
     ]
-    for key in ("switch", "microphone"):
-        assert config[key] == stock[key], key
+    import copy
+
+    switches = copy.deepcopy(config["switch"])
+    mute = next(item for item in switches if item["id"] == "master_mute_switch")
+    assert mute["on_turn_on"][0]["then"][-1] == {
+        "script.execute": {"id": "assist_live_cancel_reply_wake"}
+    }
+    mute["on_turn_on"][0]["then"].pop()
+    assert switches == stock["switch"], "mute only adds pending-restart cancellation"
+    assert config["microphone"] == stock["microphone"]
+    for trigger in ("on_error", "on_client_disconnected"):
+        assert config["voice_assistant"][trigger]["then"] == stock["voice_assistant"][
+            trigger
+        ]["then"] + [{"script.execute": {"id": "assist_live_cancel_reply_wake"}}]
     assert config["micro_wake_word"]["models"] == stock["micro_wake_word"]["models"]
     for item in stock["script"]:
         assert scripts[item["id"]] == item, item["id"]
 
 
-def test_resolved_select_callback_registered_once(tmp_path):
+@pytest.mark.parametrize("scenario", ["edges", "timeout"])
+def test_resolved_select_callback_registered_once(tmp_path, scenario):
     config = resolved_config(ROOT / "tests/fixtures/voice-pe.yaml", tmp_path)
     select = next(
         item for item in config["select"] if item["id"] == "wake_word_sensitivity"
@@ -172,12 +208,14 @@ def test_resolved_select_callback_registered_once(tmp_path):
     apply = scripts["assist_live_apply_wake_cutoffs"]["then"][0]["lambda"]
     update = scripts["assist_live_update_reply_wake"]["then"][0]["lambda"]
     expire = scripts["assist_live_reply_wake_tail"]["then"][3]["lambda"]
+    timeout = scripts["assist_live_reply_wake_tail"]["then"][1]["lambda"]
     source = (ROOT / "tests/native/reply_wake_callbacks.cpp").read_text()
     for marker, body in (
         ("SELECT_BODY", select),
         ("APPLY_BODY", apply),
         ("UPDATE_BODY", update),
         ("EXPIRE_BODY", expire),
+        ("TIMEOUT_BODY", timeout),
     ):
         source = source.replace(marker, body)
     for name, body in (
@@ -205,11 +243,15 @@ def test_resolved_select_callback_registered_once(tmp_path):
             ]
         )
         result = subprocess.run(
-            [executable], capture_output=True, text=True, timeout=60
+            [executable, scenario], capture_output=True, text=True, timeout=60
         )
         if name == "control":
             assert result.returncode == 0, result.stdout + result.stderr
-            assert result.stdout == "PASS one callback and one log per model per edge\n"
+            assert result.stdout == (
+                "PASS one callback and one log per model per edge\n"
+                if scenario == "edges"
+                else "PASS timeout restores selected cutoffs exactly once\n"
+            )
         else:
             assert result.returncode != 0
             assert "exactly one state callback" in result.stderr
