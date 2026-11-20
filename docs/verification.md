@@ -2129,3 +2129,56 @@ Device test results with one speaker, with beam search for the server `final` tr
 
 Other speakers can make a different value necessary.
 The checks are the repository unit tests, the configuration and compile targets of `task check`, and STE on the changed documents.
+
+## Reply-window wake sensitivity
+
+Date: 2026-11-20 (UTC).
+
+The shared overlay uses the stock Very sensitive cutoffs during replies and standalone announcements.
+After playback ends and VA goes to `IDLE`, the window continues for 1000 ms.
+A follow-up listening turn releases the previous reply. A new announcement starts a new window.
+
+The current sensitivity option applies again at the end, also after a select change during the window.
+The Stop word model, timer functions, mute, and stock stop-on-wake branch stay unchanged.
+Each cutoff change logs the model, integer cutoff, and `reason`.
+
+The media-player state subscriber attaches one time from the initial select value.
+The stock media and boot `actions` stay unchanged.
+One restartable script supplies the tail. It waits for VA only after playback ends.
+The pinned VA `on_idle` fires only in continuous mode, not at each usual `IDLE` change.
+If the wait continues for 30 s, the script logs the timeout and uses the selected cutoffs again.
+
+The initial targeted suite gave `12 failed` on the base firmware because the policy and configuration were missing.
+The completed targeted suite gave `14 passed`.
+The tests compile the actual policy and resolved select, state, cutoff, and timer lambdas.
+They check the tail boundary, select changes, Very sensitive, mute preservation, follow-up listening, announcements, `millis()` rollover, and the bounded wait.
+They compare the local cutoff table with the resolved stock mapping.
+
+Multiple select changes keep one state subscriber and one log for each model at each cutoff change.
+A changed subscriber guard compiles, then stops the callback-count assertion.
+
+Three isolated changes compiled and stopped named tests:
+
+- No cutoff change at the end: `test_native_reply_wake[window_start_end]`.
+- No tail: `test_native_reply_wake[tail_1000_ms]`.
+- Constant cutoff at the end: `test_native_reply_wake[select_inside_window]`.
+
+Acceptance commands, each with the external `idle-run.sh` wrapper:
+
+```sh
+task check
+python3 "$PUBLIC_TREE_CHECKER" --root . --history --private-denylist "$PRIVATE_DENYLIST"
+python3 "$STE_CHECKER" README.md ARCHITECTURE.md docs/verification.md
+git diff --check
+```
+
+The mandatory gate includes Python 3.14 and 3.12, all compile targets, and the component warning checks.
+The canonical privacy checker also runs directly because a worktree does not necessarily have the adjacent integration checkout.
+Result: `task check` exited 0. Python 3.14 and 3.12 each gave `240 passed`.
+UDP, WebSocket, pre-roll, and the transport probe each gave `new_warnings=0`.
+The direct privacy check gave `PASS public data matches=0` with history and the private denylist.
+The private probe keeps 200 ms of history, buffer feedback, environment-based API encryption, and ESPHome OTA.
+The probe image stays external to the repository. No upload, device access, or audio playback is part of this change.
+Native tests and compilation do not prove device wake precision or the `false-accept rate`.
+
+Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word during a reply](https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll).

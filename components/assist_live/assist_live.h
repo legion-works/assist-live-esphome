@@ -6,6 +6,7 @@
 #include "esphome/core/component.h"
 #include "event_codec.h"
 #include "diagnostic_publisher.h"
+#include "reply_wake_window.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "mbedtls/platform_util.h"

@@ -208,6 +208,7 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
     import copy
 
     from tests.test_pre_roll import assert_stock_wake_handler
+    from tests.test_reply_wake import assert_reply_wake_wiring
     from tools.check_bootstrap import check_preserved
 
     production, stock_probe = resolved_configs
@@ -218,6 +219,28 @@ def test_resolved_config_has_only_probe_additions_and_external_credentials(
         stock_probe["micro_wake_word"]["on_wake_word_detected"]["then"],
         "return;",
     )
+    assert_reply_wake_wiring(stock_probe, production)
+    for before, after in zip(stock_probe["select"], production["select"], strict=True):
+        if before["id"] == "wake_word_sensitivity":
+            after["on_value"] = before["on_value"]
+    production["script"] = [
+        item
+        for item in production["script"]
+        if item["id"]
+        not in {
+            "assist_live_apply_wake_cutoffs",
+            "assist_live_update_reply_wake",
+            "assist_live_reply_wake_tail",
+        }
+    ]
+    production["globals"] = [
+        item for item in production["globals"] if item["id"] != "reply_wake_window"
+    ]
+    if not production["globals"]:
+        del production["globals"]
+    production["voice_assistant"]["on_listening"] = stock_probe["voice_assistant"][
+        "on_listening"
+    ]
     for section in stock_probe:
         if section not in {
             "substitutions",

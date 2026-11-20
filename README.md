@@ -49,6 +49,12 @@ Set `assist_live_device`, `assist_live_hmac_key`, and `assist_live_server` in th
 The example uses them as the anonymous device identifier, 32-byte hexadecimal HMAC key, and server address.
 It selects UDP timing events. No device trial or transport selection result is available.
 
+The shared wake overlay uses the stock Very sensitive cutoffs during replies and announcements.
+It keeps these cutoffs for 1000 ms after playback ends and VA goes to `IDLE`.
+Then it uses the current sensitivity selection again. A follow-up listening turn also starts this tail.
+The wake handler stops an active reply without starting a new command.
+See [the wake policy](ARCHITECTURE.md#reply-wake-window) for limits and logs.
+
 ## Documentation
 
 - [Architecture](ARCHITECTURE.md)
