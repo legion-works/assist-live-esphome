@@ -222,14 +222,17 @@ def test_native_microphone_adapter_callback_allocations(
     assert "PASS microphone adapter" in output
     for line in (
         "PASS allocation failure pass-through",
+        "PASS wrong format pass-through",
         "PASS reply wake chime limit sound=1",
         "PASS reply wake chime limit sound=0",
         "PASS concurrent receive cycles=",
     ):
         assert line in output
-    assert output.count("pass-through without history") == 1, (
-        "one warning for a missing history buffer"
-    )
+    for warning in (
+        "Pre-roll PCM allocation failed; pass-through without history",
+        "Pre-roll requires 16 kHz, 32-bit stereo PCM; pass-through without history",
+    ):
+        assert output.count(warning) == 1, "one warning for a missing history buffer"
     if feedback:
         assert "PASS feedback drain models" in output
     lifecycle = output.split("BEGIN retained-source lifecycle\n", 1)[1].split(

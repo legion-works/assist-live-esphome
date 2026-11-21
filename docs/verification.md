@@ -2293,7 +2293,9 @@ Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word duri
 
 ## Review repairs: missing buffer, late chime check, timer during a restart
 
-A review found four problems in the pre-roll and reply-restart paths. Each repair has a test that gave a failure first.
+A review found four problems in the pre-roll and reply-restart paths.
+On the previous code, the adapter tests stopped at the compilation of the new count function. Thus that run did not show the adapter behavior.
+The timer case gave a test failure on the previous code. Scratch mutations show the adapter behavior failures.
 
 If the history buffer allocation is not satisfactory, the component does not call `mark_failed()`.
 ESPHome does not call `loop()` for a component with that mark, and VA waits in `STARTING_MICROPHONE` for `is_running()` without a time limit.

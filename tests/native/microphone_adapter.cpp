@@ -594,6 +594,101 @@ static void allocation_failure_passes_audio_through() {
   std::cout << "PASS allocation failure pass-through\n";
 }
 
+// VA must get the same bytes and stream format as on the stock direct route to the physical microphone.
+static void wrong_format_passes_audio_through() {
+  class OtherFormatMicrophone : public PhysicalMicrophone {
+  public:
+    OtherFormatMicrophone() { audio_stream_info_ = audio::AudioStreamInfo(16, 2, 16000); }
+  } physical;
+  switch_::Switch wake_sound;
+  TimingComponent parent;
+  voice_assistant::VoiceAssistant va;
+  voice_assistant::global_voice_assistant = &va;
+  PreRollMicrophone mic;
+  mic.set_source(&physical);
+  mic.set_wake_sound(&wake_sound);
+  mic.set_parent(&parent);
+  mic.setup();
+  assert(!mic.failed && "a format mismatch cannot stop VA in STARTING_MICROPHONE");
+  parent.set_pre_roll(&mic);
+  parent.setup();
+  assert(!(mic.get_audio_stream_info() != physical.get_audio_stream_info()) &&
+         "listeners get the physical stream format");
+  std::vector<uint8_t> raw_via, raw_direct;
+  std::vector<uint8_t> via_out[2], direct_out[2];
+  mic.add_data_callback([&](const std::vector<uint8_t> &data) { raw_via.insert(raw_via.end(), data.begin(), data.end()); });
+  physical.add_data_callback(
+      [&](const std::vector<uint8_t> &data) { raw_direct.insert(raw_direct.end(), data.begin(), data.end()); });
+  microphone::MicrophoneSource via_left(&mic, 16, 1, false), via_right(&mic, 16, 1, false);
+  microphone::MicrophoneSource direct_left(&physical, 16, 1, false), direct_right(&physical, 16, 1, false);
+  microphone::MicrophoneSource *sources[4] = {&via_left, &via_right, &direct_left, &direct_right};
+  std::vector<uint8_t> *outputs[4] = {&via_out[0], &via_out[1], &direct_out[0], &direct_out[1]};
+  for (int i = 0; i < 4; ++i) {
+    sources[i]->add_channel(i % 2);
+    auto *out = outputs[i];
+    sources[i]->add_data_callback([out](const std::vector<uint8_t> &data) { out->insert(out->end(), data.begin(), data.end()); });
+  }
+  auto clear_outputs = [&]() {
+    raw_via.clear();
+    raw_direct.clear();
+    for (auto *out : outputs)
+      out->clear();
+  };
+  auto same_as_direct = [&]() {
+    return raw_via == raw_direct && via_out[0] == direct_out[0] && via_out[1] == direct_out[1];
+  };
+  auto feed = [&](int first) {
+    std::vector<uint8_t> data(256 * 2 * sizeof(int16_t));
+    for (int i = 0; i < 256; ++i) {
+      const int16_t frame[2] = {static_cast<int16_t>(first + i), static_cast<int16_t>(-first - i)};
+      std::memcpy(data.data() + i * sizeof(frame), frame, sizeof(frame));
+    }
+    physical.send(data);
+  };
+  assert(!physical.is_running());
+  via_left.start();
+  via_right.start();
+  assert(physical.is_running() && "start reaches the physical microphone");
+  mic.loop();
+  assert(mic.is_running() && "VA leaves STARTING_MICROPHONE");
+  direct_left.start();
+  direct_right.start();
+  set_time(1000);
+  mic.wake_detected();
+  va.running = true;
+  mic.wake_started();
+  parent.command_stream_start();
+  mic.begin_turn();
+  mic.listening();
+  clear_outputs();
+  feed(1);
+  assert(raw_via.size() == 1024 && via_out[0].size() == 512 && same_as_direct() &&
+         "bytes are those of the direct route");
+  assert(mic.pre_roll_ms() == 0);
+  clear_outputs();
+  // The stock mute action mutes the physical microphone; the overlay also sets the privacy mute.
+  physical.set_mute_state(true);
+  mic.set_privacy_mute(true);
+  feed(300);
+  assert(raw_via.size() == 1024 && same_as_direct() && "mute gives the same silence as the direct route");
+  physical.set_mute_state(false);
+  mic.set_privacy_mute(false);
+  clear_outputs();
+  mic.clear();
+  feed(600);
+  assert(raw_via.size() == 1024 && same_as_direct() && "clear does not interrupt pass-through");
+  via_left.stop();
+  via_right.stop();
+  mic.loop();
+  assert(!mic.is_running() && "the last VA stop stops the adapter");
+  clear_outputs();
+  feed(900);
+  assert(raw_via.empty() && via_out[0].empty() && "no audio after stop");
+  assert(mic.passthrough_starts() == 1);
+  voice_assistant::global_voice_assistant = nullptr;
+  std::cout << "PASS wrong format pass-through\n";
+}
+
 // A reply restart with the wake sound on gets no history, so the history age limit must not block it.
 static void reply_wake_chime_after_history_limit(bool wake_sound_on) {
   PhysicalMicrophone physical;
@@ -805,6 +900,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   allocation_failure_passes_audio_through();
+  wrong_format_passes_audio_through();
   reply_wake_chime_after_history_limit(true);
   reply_wake_chime_after_history_limit(false);
   concurrent_receive_and_hooks();
