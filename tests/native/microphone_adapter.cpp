@@ -641,9 +641,10 @@ static void reply_restart_without_buffer() {
       assert(mic.reply_wake_ready());
     }
     mic.wake_detected();
+    // VA is still idle here, so only the cleared request can make readiness false.
+    assert(!mic.reply_wake_ready() && "the start consumes the reply request");
     va.running = true;
     mic.wake_started();
-    assert(!mic.reply_wake_ready() && "the start consumes the reply request");
     mic.start();
     mic.loop();
     assert(mic.is_running());
@@ -660,6 +661,7 @@ static void reply_restart_without_buffer() {
     va.running = false;
     parent.command_stream_end();
     mic.stop();
+    assert(!mic.reply_wake_ready() && "no request stays after the turn stop");
   }
   va.running = true;
   mic.start();
@@ -668,12 +670,14 @@ static void reply_restart_without_buffer() {
   va.running = false;
   assert(!mic.reply_wake_ready() && "mute cancels the request without the buffer");
   mic.set_privacy_mute(false);
+  assert(!mic.reply_wake_ready() && "unmute cannot revive a request without the buffer");
   va.running = true;
   mic.capture_reply_wake();
   mic.clear();
   va.running = false;
   assert(!mic.reply_wake_ready() && "error or disconnect cancels the request without the buffer");
   mic.stop();
+  assert(!mic.reply_wake_ready() && "no request stays after the final stop");
   voice_assistant::global_voice_assistant = nullptr;
   std::cout << "PASS reply restart without buffer\n";
 }

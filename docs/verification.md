@@ -2332,7 +2332,8 @@ Result: `ruff check`, `ruff format --check`, and `mypy` exited 0.
 `pytest tests/` gave `269 passed, 4 deselected`. The 4 tests that did not run use ESPHome code generation. The host did not let it run at test time.
 ESPHome compiles did not run. Run `task compile`, `task compile-pre-roll`, and `task compile-probe` before a release.
 
-Without the history buffer, a wake word during a reply did not start a new turn. The 500 ms wait expired and cancelled the request.
+Without the history buffer, a wake word during a reply did not start a new turn.
+The component had no request. Thus the start check refused the turn after the reply stopped, or the 500 ms wait expired.
 At this time, the component keeps the request without the buffer, and the new turn starts without history, as with the wake sound on.
 A native case with no buffer stops the reply and starts the turn with `pre_roll_ms` 0, also 1030 ms after detection.
 On the previous code, this case gave the failure `idle VA can start the reply turn without the buffer`.
