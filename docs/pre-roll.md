@@ -117,6 +117,7 @@ The replay gate, 1000 ms detection-to-gate limit, 1000 ms total history limit, a
 The reply-stop wait has a 500 ms limit. A timeout logs the failure and cancels the request without a start.
 Stop, mute, or a VA error during the wait also cancels the request and clears its history.
 A wake word during the wait stops a ringing timer and cancels the request.
+
 With the wake sound on, the turn gets no history. Thus the 1000 ms detection-to-start limit does not apply to the check after the chime.
 A second named wake during the wait does not make one more request.
 The logs give `detection_to_idle_ms` and `detection_to_start_ms` for each restart.
@@ -130,7 +131,7 @@ These tests do not measure capture continuity on the device.
 
 The I2S task calls the capture callback, and the main loop calls the turn hooks. All of them use one mutex.
 A native test runs the capture callback in a second task while the main task runs the turn hooks.
-A ThreadSanitizer build of this test must give no data race. The test also checks that the two channels stay aligned and that the frames stay in order.
+A ThreadSanitizer build of this test must give no data race. The test also checks that the left and right outputs stay aligned and that the frames stay in order.
 
 Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word during a reply](https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll).
 
@@ -251,7 +252,8 @@ The component does not replace or borrow the stock VA or wake-word buffers.
 If the component cannot get memory for the queue, it logs one warning and does not stop VA.
 The same occurs if the physical microphone does not supply 16 kHz, 32-bit stereo PCM.
 The component then starts and stops the physical microphone for VA and sends its audio directly, with no history.
-Privacy mute continues to send zero samples. Each turn reports `pre_roll_ms` 0.
+
+Privacy mute continues to send samples with the value 0. Each turn reports `pre_roll_ms` 0.
 A wake word during a reply stops the reply and starts a new turn without history, as with the wake sound on.
 The component counts the starts without history and gives the count in its configuration log.
 

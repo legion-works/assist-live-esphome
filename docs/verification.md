@@ -2340,3 +2340,12 @@ On the previous code, this case gave the failure `idle VA can start the reply tu
 The scratch mutation that stops `capture_reply_wake()` early without the buffer gave the same failure.
 
 The adapter and reply-restart tests gave `24 passed`. `ruff check`, `ruff format --check`, and `mypy` exited 0.
+
+## Correction: compiles for the pre-roll repairs (2026-11-21)
+
+The record for the pre-roll repairs says that the compiles did not run.
+It also says that 4 code-generation tests did not run.
+These checks ran in the complete `task check` before the push.
+The `pytest` run gave `273 passed` on Python 3.12 and on Python 3.14.
+This count includes the 4 code-generation tests.
+The four compile targets and the two configuration targets gave `new_warnings=0`.
