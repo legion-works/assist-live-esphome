@@ -3,7 +3,12 @@
 #include "esp_timer.h"
 #include <cassert>
 #include <iostream>
+#include <atomic>
+#include <climits>
+#include <mutex>
 #include <new>
+#include <string>
+#include <thread>
 #include <type_traits>
 #include "esphome/components/microphone/microphone_source.h"
 
@@ -510,7 +515,299 @@ template<typename T> static void reply_wake_history(int history_ms) {
   }
 }
 
-int main() {
+static void allocation_failure_passes_audio_through() {
+  PhysicalMicrophone physical;
+  switch_::Switch wake_sound;
+  TimingComponent parent;
+  voice_assistant::VoiceAssistant va;
+  voice_assistant::global_voice_assistant = &va;
+  PreRollMicrophone mic;
+  mic.set_source(&physical);
+  mic.set_wake_sound(&wake_sound);
+  mic.set_parent(&parent);
+  test_allocation_fails = true;
+  mic.setup();
+  test_allocation_fails = false;
+  assert(!mic.failed && "a failed component gets no loop and VA waits for is_running without a limit");
+  parent.set_pre_roll(&mic);
+  parent.setup();
+  microphone::MicrophoneSource left(&mic, 32, 1, false), right(&mic, 32, 1, false);
+  left.add_channel(0);
+  right.add_channel(1);
+  std::vector<int32_t> received_left, received_right;
+  auto collect = [](std::vector<int32_t> &out, const std::vector<uint8_t> &data) {
+    for (size_t i = 0; i < data.size(); i += sizeof(int32_t)) {
+      int32_t value;
+      std::memcpy(&value, data.data() + i, sizeof(value));
+      out.push_back(value);
+    }
+  };
+  left.add_data_callback([&](const auto &data) { collect(received_left, data); });
+  right.add_data_callback([&](const auto &data) { collect(received_right, data); });
+  auto feed = [&](int first) {
+    std::vector<uint8_t> data(256 * sizeof(StereoFrame));
+    for (int i = 0; i < 256; ++i) {
+      StereoFrame frame{(first + i) * 64, -(first + i) * 64};
+      std::memcpy(data.data() + i * sizeof(frame), &frame, sizeof(frame));
+    }
+    physical.send(data);
+  };
+  for (int turn = 0; turn < 2; ++turn) {
+    received_left.clear();
+    received_right.clear();
+    va.running = false;
+    set_time(1000 + turn * 1000);
+    mic.wake_detected();
+    va.running = true;
+    mic.wake_started();
+    left.start();
+    right.start();
+    assert(physical.is_running() && "start reaches the physical microphone without a history buffer");
+    mic.loop();
+    assert(mic.is_running() && "VA leaves STARTING_MICROPHONE without a history buffer");
+    parent.command_stream_start();
+    mic.begin_turn();
+    mic.listening();
+    feed(turn * 1000 + 1);
+    assert(received_left.size() == 256 && received_right.size() == 256 && "live audio passes straight through");
+    for (int i = 0; i < 256; ++i)
+      assert(received_left[i] == (turn * 1000 + 1 + i) * 64 && received_right[i] == -received_left[i]);
+    assert(mic.pre_roll_ms() == 0 && "a turn without a buffer has no history");
+    const auto event = parent.take();
+    assert(event.stage == Stage::MIC_OPEN && std::string(event.data).find("\"pre_roll_ms\":0") != std::string::npos);
+    mic.set_privacy_mute(true);
+    feed(turn * 1000 + 300);
+    for (size_t i = 256; i < received_left.size(); ++i)
+      assert(received_left[i] == 0 && "privacy mute sends silence also without a buffer");
+    mic.set_privacy_mute(false);
+    mic.finish_turn();
+    va.running = false;
+    parent.command_stream_end();
+    mic.finish_turn_if_idle();
+    left.stop();
+    right.stop();
+    mic.loop();
+    assert(!physical.is_running() && !mic.is_running() && "stop reaches the physical microphone");
+  }
+  assert(mic.passthrough_starts() == 2 && "each start without a buffer is counted");
+  voice_assistant::global_voice_assistant = nullptr;
+  std::cout << "PASS allocation failure pass-through\n";
+}
+
+// A reply restart with the wake sound on gets no history, so the history age limit must not block it.
+static void reply_wake_chime_after_history_limit(bool wake_sound_on) {
+  PhysicalMicrophone physical;
+  switch_::Switch wake_sound;
+  TimingComponent parent;
+  voice_assistant::VoiceAssistant va;
+  voice_assistant::global_voice_assistant = &va;
+  TestMicrophone mic;
+  mic.set_source(&physical);
+  mic.set_wake_sound(&wake_sound);
+  mic.set_parent(&parent);
+  mic.setup();
+  parent.set_pre_roll(&mic);
+  parent.setup();
+  wake_sound.state = wake_sound_on;
+  mic.start();
+  std::vector<uint8_t> input(256 * sizeof(StereoFrame), 0x11);
+  physical.send(input);
+  va.running = true;
+  set_time(100);
+  mic.capture_reply_wake();
+  mic.stop();
+  // Idle after 480 ms of the 500 ms stop wait.
+  set_time(580);
+  va.running = false;
+  mic.finish_turn_if_idle();
+  assert(mic.reply_wake_ready() && "first check inside the history limit");
+  // The 300 ms chime delay plus a 250 ms main-loop stall puts the second check at 1030 ms after detection.
+  set_time(1130);
+  if (!wake_sound_on) {
+    assert(!mic.reply_wake_ready() && "a history turn keeps the 1000 ms detection-to-start limit");
+    mic.clear();
+    voice_assistant::global_voice_assistant = nullptr;
+    std::cout << "PASS reply wake chime limit sound=0\n";
+    return;
+  }
+  assert(mic.reply_wake_ready() && "wake sound on: the age limit cannot cancel a turn without history");
+  mic.wake_detected();
+  va.running = true;
+  mic.wake_started();
+  mic.start();
+  parent.command_stream_start();
+  mic.begin_turn();
+  mic.listening();
+  assert(mic.pre_roll_ms() == 0 && mic.historical_frames() == 0 && "wake sound turn has no history");
+  mic.finish_turn();
+  mic.stop();
+  voice_assistant::global_voice_assistant = nullptr;
+  std::cout << "PASS reply wake chime limit sound=1\n";
+}
+
+// The I2S task calls receive_ while the main loop runs the turn hooks.
+// A ThreadSanitizer build of this scenario finds a hook that does not take the shared mutex.
+static void concurrent_receive_and_hooks() {
+  PhysicalMicrophone physical;
+  switch_::Switch wake_sound;
+  TimingComponent parent;
+  voice_assistant::VoiceAssistant va;
+  voice_assistant::global_voice_assistant = &va;
+  TestMicrophone mic;
+  mic.set_source(&physical);
+  mic.set_wake_sound(&wake_sound);
+  mic.set_parent(&parent);
+  mic.set_length_ms(16);
+  mic.setup();
+  parent.set_pre_roll(&mic);
+  parent.setup();
+  constexpr int32_t MARKER = INT32_MIN;
+  std::mutex received_mutex;
+  std::vector<int32_t> received;
+  // The sources start before the capture thread, because upstream MicrophoneSource
+  // changes its enabled flag outside the microphone lock.
+  microphone::MicrophoneSource left(&mic, 32, 1, false), right(&mic, 32, 1, false);
+  left.add_channel(0);
+  right.add_channel(1);
+  std::vector<int32_t> right_values;
+  left.add_data_callback([&](const std::vector<uint8_t> &data) {
+    std::lock_guard<std::mutex> lock(received_mutex);
+    for (size_t i = 0; i < data.size(); i += sizeof(int32_t)) {
+      int32_t value;
+      std::memcpy(&value, data.data() + i, sizeof(value));
+      received.push_back(value);
+    }
+  });
+  right.add_data_callback([&](const std::vector<uint8_t> &data) {
+    std::lock_guard<std::mutex> lock(received_mutex);
+    for (size_t i = 0; i < data.size(); i += sizeof(int32_t)) {
+      int32_t value;
+      std::memcpy(&value, data.data() + i, sizeof(value));
+      right_values.push_back(value);
+    }
+  });
+  left.start();
+  right.start();
+  auto marker = [&]() {
+    std::lock_guard<std::mutex> lock(received_mutex);
+    received.push_back(MARKER);
+    right_values.push_back(MARKER);
+  };
+  std::atomic<bool> done{false}, hooks_started{false};
+  constexpr int BLOCKS = 3000;
+  std::thread capture([&]() {
+    while (!hooks_started)
+      std::this_thread::yield();
+    std::vector<uint8_t> data(256 * sizeof(StereoFrame));
+    for (int block = 0; block < BLOCKS; ++block) {
+      for (int i = 0; i < 256; ++i) {
+        const int32_t value = (block * 256 + i + 1) * 64;
+        StereoFrame frame{value, -value};
+        std::memcpy(data.data() + i * sizeof(frame), &frame, sizeof(frame));
+      }
+      physical.send(data);
+      std::this_thread::yield();
+    }
+    done = true;
+  });
+  uint64_t now = 1000;
+  int cycle = 0;
+  hooks_started = true;
+  while (!done || cycle < 8) {
+    set_time(now);
+    va.running = false;
+    mic.loop();
+    switch (cycle++ % 4) {
+      case 0:
+        mic.wake_detected();
+        va.running = true;
+        mic.wake_started();
+        break;
+      case 1:
+        va.running = true;
+        mic.begin_turn();
+        break;
+      case 2:
+        va.running = true;
+        mic.capture_reply_wake();
+        mic.reply_wake_ready();
+        va.running = false;
+        mic.reply_wake_ready();
+        mic.wake_detected();
+        va.running = true;
+        mic.wake_started();
+        break;
+      default:
+        mic.set_privacy_mute(true);
+        mic.set_privacy_mute(false);
+        mic.wake_detected();
+        break;
+    }
+    marker();
+    parent.command_stream_start();
+    now += 20;
+    set_time(now);
+    mic.listening();
+    for (int i = 0; i < 4; ++i) {
+      mic.loop();
+      now += 8;
+      set_time(now);
+    }
+    if (cycle % 3 == 0)
+      mic.set_privacy_mute(true);
+    mic.history_complete();
+    mic.pre_roll_ms();
+    mic.set_privacy_mute(false);
+    if (cycle % 2 == 0)
+      mic.clear();
+    else
+      mic.finish_turn();
+    mic.finish_turn_if_idle();
+    marker();
+    std::this_thread::yield();
+  }
+  capture.join();
+  left.stop();
+  right.stop();
+  // A marker can fall between the two channel callbacks of one block, so compare the channels without markers.
+  auto without_markers = [&](const std::vector<int32_t> &values) {
+    std::vector<int32_t> result;
+    for (int32_t value : values)
+      if (value != MARKER)
+        result.push_back(value);
+    return result;
+  };
+  const auto left_values = without_markers(received), right_only = without_markers(right_values);
+  assert(left_values.size() == right_only.size() && "both channels get each block");
+  for (size_t i = 0; i < left_values.size(); ++i)
+    assert(right_only[i] == -left_values[i] && "channels stay aligned under concurrent capture");
+  int32_t last = 0;
+  size_t samples = 0;
+  for (int32_t value : received) {
+    if (value == MARKER) {
+      last = 0;
+      continue;
+    }
+    if (value == 0)
+      continue;
+    assert(value > last && "no duplicate or reordered frame inside one segment");
+    last = value;
+    ++samples;
+  }
+  assert(samples != 0 && "audio and hooks ran at the same time");
+  voice_assistant::global_voice_assistant = nullptr;
+  std::cout << "PASS concurrent receive cycles=" << cycle << "\n";
+}
+
+int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "concurrent") {
+    concurrent_receive_and_hooks();
+    return 0;
+  }
+  allocation_failure_passes_audio_through();
+  reply_wake_chime_after_history_limit(true);
+  reply_wake_chime_after_history_limit(false);
+  concurrent_receive_and_hooks();
   reply_wake_history<TestMicrophone>(16);
   reply_wake_history<TestMicrophone>(900);
 #ifdef USE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK

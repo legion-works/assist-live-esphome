@@ -40,6 +40,11 @@ public:
   void clear();
   bool history_complete();
   uint32_t pre_roll_ms();
+  // Starts without a history buffer, because its allocation or the PCM format check failed.
+  uint32_t passthrough_starts() {
+    LockGuard lock(mutex_);
+    return passthrough_starts_;
+  }
 #ifdef USE_ASSIST_LIVE_DIAGNOSTICS
   bool take_diagnostics(TurnDiagnostics &turn) {
     LockGuard lock(mutex_);
@@ -49,6 +54,7 @@ public:
 
 protected:
   void receive_(const std::vector<uint8_t> &data);
+  void deliver_(const std::vector<uint8_t> &data);
   void push_frames_(const std::vector<uint8_t> &data);
   void update_mute_();
   void log_turn_();
@@ -64,7 +70,7 @@ protected:
   size_t capacity_{0}, reported_overflows_{0};
   unsigned listeners_{0};
   uint64_t arm_ms_{0}, arm_to_start_ms_{0};
-  uint32_t last_pre_roll_ms_{0};
+  uint32_t last_pre_roll_ms_{0}, passthrough_starts_{0};
   bool arm_pending_{false}, arm_expired_{false};
   bool reply_pending_{false};
   bool turn_active_{false}, wake_bound_{false}, replay_started_{false};

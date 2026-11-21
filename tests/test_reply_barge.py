@@ -80,11 +80,23 @@ def reply_barge_native(tmp_path_factory):
     restart = scripts["assist_live_restart_reply_wake"]
     assert restart["mode"] == "single", "one pending reply restart"
     handler = config["micro_wake_word"]["on_wake_word_detected"]["then"]
+    on_error = config["voice_assistant"]["on_error"]["then"]
+    # Stock error actions control LEDs and phases. The harness runs only the added tail.
+    added = [
+        item
+        for item in on_error
+        if "pre_roll_mic" in str(item.get("lambda", ""))
+        or str(item.get("script.execute", {}).get("id", "")).startswith("assist_live_")
+    ]
+    assert added == on_error[len(on_error) - len(added) :], (
+        "error actions added after the stock actions"
+    )
     source = (ROOT / "tests/native/reply_barge.cpp").read_text()
     for marker, actions in (
         ("HANDLER_BODY", handler),
         ("RESTART_BODY", restart["then"]),
         ("CANCEL_BODY", scripts["assist_live_cancel_reply_wake"]["then"]),
+        ("ERROR_BODY", added),
     ):
         source = source.replace(marker, actions_cpp(actions))
     path = tmp_path / "reply_barge.cpp"
@@ -121,6 +133,8 @@ def reply_barge_native(tmp_path_factory):
         "pending_stop",
         "pending_wake",
         "pending_mute",
+        "pending_error",
+        "pending_timer",
         "chime",
         "timer_during_chime",
         "announcement_during_chime",

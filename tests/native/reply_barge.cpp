@@ -19,6 +19,7 @@ bool expired{false};
 void detect(const std::string &wake_word);
 void restart(const std::string &wake_word);
 void cancel();
+void on_error();
 void chime_wait();
 uint32_t millis() { return static_cast<uint32_t>(now) - tick_lag; }
 uint64_t millis_64() { return now; }
@@ -58,6 +59,11 @@ template<typename F> void wait_for_idle(F ready) {
     if (injection == "mute") {
       master_mute_switch.state = true;
       cancel();
+    } else if (injection == "error") {
+      on_error();
+    } else if (injection == "timer") {
+      timer_ringing.state = true;
+      detect("Hey Jarvis");
     } else {
       detect(injection);
     }
@@ -86,6 +92,7 @@ void log_line(const char *, const char *format, ...) {
 void cancel() { CANCEL_BODY }
 void restart(const std::string &wake_word) { (void)wake_word; RESTART_BODY }
 void detect(const std::string &wake_word) { HANDLER_BODY }
+void on_error() { ERROR_BODY }
 std::string scenario;
 void chime_wait() {
   now += 300;
@@ -115,6 +122,8 @@ int main(int argc, char **argv) {
   if (scenario == "pending_stop") injection = "Stop";
   if (scenario == "pending_wake") injection = "Hey Jarvis";
   if (scenario == "pending_mute") injection = "mute";
+  if (scenario == "pending_error") injection = "error";
+  if (scenario == "pending_timer") injection = "timer";
   detect(scenario == "stop" ? "Stop" : "Okay Nabu");
   assert(!events.empty() && events.front() == "wake" && wake_times.front() == detected_at && "timing first at detection");
   const bool starts = scenario == "reply" || scenario == "pending_wake" || scenario == "chime" || split_clock;
@@ -133,8 +142,15 @@ int main(int argc, char **argv) {
   if (scenario == "muted") assert(va.stops == 0);
   if (scenario == "timeout")
     assert(std::any_of(logs.begin(), logs.end(), [](const auto &line) { return line.find("idle wait expired") != std::string::npos; }));
-  if (scenario == "pending_stop" || scenario == "pending_mute")
+  if (scenario == "pending_stop" || scenario == "pending_mute" || scenario == "pending_error")
     assert(!pre_roll_mic.captured && !reply_wake_pending);
+  if (scenario == "pending_error")
+    assert(va.starts == 0 && "an error during the stop wait cancels the restart");
+  if (scenario == "pending_timer") {
+    assert(!timer_ringing.state && "a wake word stops a timer that rings during the stop wait");
+    assert(!pre_roll_mic.captured && !reply_wake_pending && va.starts == 0 && va.stops == 1 &&
+           "the timer stop cancels the pending restart");
+  }
   if (scenario.find("during_chime") != std::string::npos) {
     assert(!pre_roll_mic.captured && !reply_wake_pending);
     assert(va.starts == 0 && "chime races must cancel the pending restart");

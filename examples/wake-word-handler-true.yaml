@@ -7,9 +7,21 @@
       lambda: return id(reply_wake_pending) && wake_word == "Stop";
     then:
       - script.execute: assist_live_cancel_reply_wake
+# A wake word stops a ringing timer as in the stock handler, also while a restart waits.
+# Stock firmware starts no turn for that wake word, so the pending restart stops too.
 - if:
     condition:
       and:
-        - lambda: return !id(reply_wake_pending);
+        - lambda: return id(reply_wake_pending);
         - switch.is_off: master_mute_switch
-    then: !include wake-word-priority.yaml
+        - switch.is_on: timer_ringing
+    then:
+      - switch.turn_off: timer_ringing
+      - script.execute: assist_live_cancel_reply_wake
+    else:
+      - if:
+          condition:
+            and:
+              - lambda: return !id(reply_wake_pending);
+              - switch.is_off: master_mute_switch
+          then: !include wake-word-priority.yaml

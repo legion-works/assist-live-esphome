@@ -38,9 +38,12 @@ public:
 private:
   std::vector<std::function<void(Args...)>> callbacks_;
 };
+inline bool test_allocation_fails = false;
 template <typename T> class RAMAllocator {
 public:
-  T *allocate(size_t count) { return static_cast<T *>(std::malloc(count * sizeof(T))); }
+  T *allocate(size_t count) {
+    return test_allocation_fails ? nullptr : static_cast<T *>(std::malloc(count * sizeof(T)));
+  }
 };
 namespace audio {
 class AudioStreamInfo {

@@ -12,23 +12,24 @@ static const char *const TAG = "assist_live.pre_roll";
 
 void PreRollMicrophone::setup() {
   audio_stream_info_ = source_->get_audio_stream_info();
-  if (audio_stream_info_ != audio::AudioStreamInfo(32, 2, 16000)) {
-    ESP_LOGE(TAG, "Pre-roll requires 16 kHz, 32-bit stereo PCM");
-    mark_failed();
-    return;
-  }
-  capacity_ = (length_ms_ + 1000) * 16;
-  RAMAllocator<StereoFrame> allocator;
-  memory_ = allocator.allocate(capacity_);
-  if (memory_ == nullptr) {
-    ESP_LOGE(TAG, "Pre-roll PCM allocation failed");
-    mark_failed();
-    return;
-  }
-  std::memset(memory_, 0, capacity_ * sizeof(StereoFrame));
-  buffer_.reset(new PreRollBuffer(memory_, length_ms_ * 16, capacity_));
   output_.reserve(256 * sizeof(StereoFrame));
   silence_.resize(256 * sizeof(StereoFrame), 0);
+  // Do not mark the component failed: ESPHome then skips loop(), and VA waits in
+  // STARTING_MICROPHONE for is_running() without a time limit.
+  if (audio_stream_info_ != audio::AudioStreamInfo(32, 2, 16000)) {
+    ESP_LOGW(TAG, "Pre-roll requires 16 kHz, 32-bit stereo PCM; pass-through without history");
+  } else {
+    capacity_ = (length_ms_ + 1000) * 16;
+    RAMAllocator<StereoFrame> allocator;
+    memory_ = allocator.allocate(capacity_);
+    if (memory_ == nullptr) {
+      capacity_ = 0;
+      ESP_LOGW(TAG, "Pre-roll PCM allocation failed; pass-through without history");
+    } else {
+      std::memset(memory_, 0, capacity_ * sizeof(StereoFrame));
+      buffer_.reset(new PreRollBuffer(memory_, length_ms_ * 16, capacity_));
+    }
+  }
   source_->add_data_callback([this](const std::vector<uint8_t> &data) { receive_(data); });
 }
 
@@ -37,7 +38,8 @@ void PreRollMicrophone::update_mute_() {
   if (muted == effective_mute_)
     return;
   effective_mute_ = muted;
-  buffer_->mute(muted);
+  if (buffer_)
+    buffer_->mute(muted);
   if (muted) {
     arm_pending_ = false;
     reply_pending_ = false;
@@ -46,11 +48,27 @@ void PreRollMicrophone::update_mute_() {
     passthrough_ = true;
 }
 
+void PreRollMicrophone::deliver_(const std::vector<uint8_t> &data) {
+  if (effective_mute_) {
+    // Reuse the setup allocation, also when a source supplies a larger block.
+    constexpr size_t SILENCE_BYTES = 256 * sizeof(StereoFrame);
+    for (size_t offset = 0; offset < data.size(); offset += SILENCE_BYTES) {
+      silence_.resize(std::min(SILENCE_BYTES, data.size() - offset));
+      data_callbacks_.call(silence_);
+    }
+  } else {
+    data_callbacks_.call(data);
+  }
+}
+
 void PreRollMicrophone::receive_(const std::vector<uint8_t> &data) {
   LockGuard lock(mutex_);
-  if (!buffer_)
-    return;
   update_mute_();
+  if (!buffer_) {
+    if (listeners_ != 0)
+      deliver_(data);
+    return;
+  }
   const bool idle = !turn_active_ && !arm_pending_;
   if (idle && !effective_mute_)
     push_frames_(data);
@@ -58,16 +76,7 @@ void PreRollMicrophone::receive_(const std::vector<uint8_t> &data) {
       (idle || passthrough_ || effective_mute_)) {
     if (turn_active_)
       buffer_->account_passthrough(data.size() / sizeof(StereoFrame));
-    if (effective_mute_) {
-      // Reuse the setup allocation, also when a source supplies a larger block.
-      constexpr size_t SILENCE_BYTES = 256 * sizeof(StereoFrame);
-      for (size_t offset = 0; offset < data.size(); offset += SILENCE_BYTES) {
-        silence_.resize(std::min(SILENCE_BYTES, data.size() - offset));
-        data_callbacks_.call(silence_);
-      }
-    } else {
-      data_callbacks_.call(data);
-    }
+    deliver_(data);
     return;
   }
   if (idle || (wake_bound_ && arm_expired_) || data.size() % sizeof(StereoFrame) != 0) {
@@ -135,8 +144,10 @@ bool PreRollMicrophone::reply_wake_ready() {
     return false;
   update_mute_();
   auto *va = voice_assistant::global_voice_assistant;
+  // A wake-sound turn gets no history, so the history age limit applies only without the sound.
   return reply_pending_ && arm_pending_ && !effective_mute_ && va != nullptr && !va->is_running() &&
-         AssistLiveComponent::monotonic_ms() - arm_ms_ <= PreRollBuffer::MAX_ARM_TO_START_MS;
+         (wake_sound_->state ||
+          AssistLiveComponent::monotonic_ms() - arm_ms_ <= PreRollBuffer::MAX_ARM_TO_START_MS);
 }
 
 void PreRollMicrophone::wake_started() {
@@ -172,9 +183,11 @@ void PreRollMicrophone::begin_turn() {
 
 void PreRollMicrophone::start() {
   LockGuard lock(mutex_);
-  if (!buffer_ || listeners_++ != 0)
+  if (listeners_++ != 0)
     return;
   update_mute_();
+  if (!buffer_)
+    ++passthrough_starts_;
   source_->start();
   state_ = microphone::STATE_STARTING;
 }
@@ -207,16 +220,16 @@ void PreRollMicrophone::loop() {
   bool complete = false;
   {
     LockGuard lock(mutex_);
+    update_mute_();
+    if (listeners_ != 0 && source_->is_running())
+      state_ = microphone::STATE_RUNNING;
     if (!buffer_)
       return;
-    update_mute_();
     if (wake_bound_ && !arm_expired_ &&
         AssistLiveComponent::monotonic_ms() - arm_ms_ > PreRollBuffer::MAX_ARM_TO_START_MS) {
       arm_expired_ = true;
       buffer_->reset_turn();
     }
-    if (listeners_ != 0 && source_->is_running())
-      state_ = microphone::STATE_RUNNING;
     StereoFrame frames[256];
 #ifdef USE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK
     // Final validation fixes each VA channel at 16-bit mono.
@@ -323,8 +336,7 @@ void PreRollMicrophone::clear() {
 void PreRollMicrophone::set_privacy_mute(bool muted) {
   LockGuard lock(mutex_);
   privacy_mute_ = muted;
-  if (buffer_)
-    update_mute_();
+  update_mute_();
 }
 
 bool PreRollMicrophone::history_complete() {
@@ -342,6 +354,8 @@ void PreRollMicrophone::dump_config() {
   ESP_LOGCONFIG(TAG, "Pre-roll: %u ms lookback, %u PCM bytes (PSRAM preferred)",
                 static_cast<unsigned>(length_ms_),
                 static_cast<unsigned>(capacity_ * sizeof(StereoFrame)));
+  if (!buffer_)
+    ESP_LOGW(TAG, "Pre-roll buffer missing, starts=%u", static_cast<unsigned>(passthrough_starts_));
 }
 }
 #endif

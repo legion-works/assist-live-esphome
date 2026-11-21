@@ -132,11 +132,7 @@ def test_native_pre_roll_history_and_pacing(tmp_path):
     assert run([executable]) == "PASS pre-roll\n"
 
 
-@pytest.mark.parametrize("diagnostics", [False, True])
-@pytest.mark.parametrize("feedback", [False, True])
-def test_native_microphone_adapter_callback_allocations(
-    tmp_path, diagnostics, feedback
-):
+def build_microphone_adapter(tmp_path, flags):
     from importlib import resources
 
     from tests.event_vectors import COMPONENT, compiler, native_json_include, run
@@ -174,6 +170,7 @@ def test_native_microphone_adapter_callback_allocations(
     executable = str(tmp_path / "microphone_adapter")
     command = [
         compiler(),
+        *flags,
         "-std=c++17",
         "-Wall",
         "-Wextra",
@@ -201,16 +198,38 @@ def test_native_microphone_adapter_callback_allocations(
         "-o",
         executable,
     ]
+    run(command)
+    return executable
+
+
+@pytest.mark.parametrize("diagnostics", [False, True])
+@pytest.mark.parametrize("feedback", [False, True])
+def test_native_microphone_adapter_callback_allocations(
+    tmp_path, diagnostics, feedback
+):
+    from tests.event_vectors import run
+
+    flags = []
     if diagnostics:
-        command.insert(1, "-DUSE_ASSIST_LIVE_DIAGNOSTICS")
+        flags.append("-DUSE_ASSIST_LIVE_DIAGNOSTICS")
     if feedback:
-        command[1:1] = [
+        flags += [
             "-DUSE_ASSIST_LIVE_PRE_ROLL_BUFFER_FEEDBACK",
             "-DUSE_VOICE_ASSISTANT_MICROPHONE_BUFFER_STATE",
         ]
-    run(command)
+    executable = build_microphone_adapter(tmp_path, flags)
     output = run([executable])
     assert "PASS microphone adapter" in output
+    for line in (
+        "PASS allocation failure pass-through",
+        "PASS reply wake chime limit sound=1",
+        "PASS reply wake chime limit sound=0",
+        "PASS concurrent receive cycles=",
+    ):
+        assert line in output
+    assert output.count("pass-through without history") == 1, (
+        "one warning for a missing history buffer"
+    )
     if feedback:
         assert "PASS feedback drain models" in output
     lifecycle = output.split("BEGIN retained-source lifecycle\n", 1)[1].split(
@@ -219,6 +238,22 @@ def test_native_microphone_adapter_callback_allocations(
     assert lifecycle.count("Turn wake_ms=") == 4, "exactly one summary per logical turn"
     assert "arm_to_start_ms=1000 arm_expired=0" in output
     assert "arm_to_start_ms=1001 arm_expired=1" in output
+
+
+def test_native_microphone_adapter_concurrent_receive_has_no_data_race(tmp_path):
+    executable = build_microphone_adapter(
+        tmp_path, ["-fsanitize=thread", "-O1", "-g", "-DUSE_ASSIST_LIVE_DIAGNOSTICS"]
+    )
+    result = subprocess.run(
+        [executable, "concurrent"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "TSAN_OPTIONS": "halt_on_error=1 exitcode=66"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ThreadSanitizer" not in result.stderr
+    assert "PASS concurrent receive cycles=" in result.stdout
 
 
 def resolved_config(path, tmp_path, *, verbose=False):
@@ -352,7 +387,20 @@ def assert_stock_wake_handler(handler, stock_handler, arm):
             "then": [{"script.execute": {"id": "assist_live_cancel_reply_wake"}}],
         }
     }, "pending Stop only cancels the queued restart"
-    normalized = without_arm(copy.deepcopy(handler[2:]))
+    assert len(handler) == 3
+    timer = handler[2]["if"]
+    assert timer["condition"] == {
+        "and": [
+            {"lambda": "return id(reply_wake_pending);"},
+            {"switch.is_off": {"id": "master_mute_switch"}},
+            {"switch.is_on": {"id": "timer_ringing"}},
+        ]
+    }, "the stock timer stop runs before the pending check"
+    assert timer["then"] == [
+        {"switch.turn_off": {"id": "timer_ringing"}},
+        {"script.execute": {"id": "assist_live_cancel_reply_wake"}},
+    ], "a timer stop during a pending restart cancels the restart"
+    normalized = without_arm(copy.deepcopy(timer["else"]))
     outer = normalized[0]["if"]
     assert outer["condition"] == {
         "and": [
@@ -390,6 +438,12 @@ def assert_stock_wake_handler(handler, stock_handler, arm):
     )
     assert removed == {"arm": 1, "started": 1}, (
         "exactly paired pre/post wake start slots"
+    )
+    stock_timer = stock_handler[0]["if"]["then"][0]["if"]
+    assert stock_handler[0]["if"]["condition"] == timer["condition"]["and"][1]
+    assert stock_timer["condition"] == timer["condition"]["and"][2]
+    assert stock_timer["then"] == timer["then"][:1], (
+        "stock wake handler drift: pending timer branch copies the stock branch"
     )
     return normalized
 

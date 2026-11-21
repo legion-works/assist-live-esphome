@@ -2290,3 +2290,42 @@ The canonical privacy checker gave `PASS public data matches=0` with history and
 The private probe compiled with `new_warnings=0`. Resolved length was 200 ms and the two options were `'true'`.
 
 Design source: [assist-live `docs/design.md`, Satellite pre-roll, Wake word during a reply](https://github.com/legion-works/assist-live/blob/main/docs/design.md#satellite-pre-roll).
+
+## Review repairs: missing buffer, late chime check, timer during a restart
+
+A review found four problems in the pre-roll and reply-restart paths. Each repair has a test that gave a failure first.
+
+If the history buffer allocation is not satisfactory, the component does not call `mark_failed()`.
+ESPHome does not call `loop()` for a component with that mark, and VA waits in `STARTING_MICROPHONE` for `is_running()` without a time limit.
+At this time, the component starts the physical microphone, sends its audio directly, logs one warning, and counts each start without history.
+The same rule applies when the PCM format check is not satisfactory.
+A native test uses an allocator that gives no memory. VA gets `is_running()` after one loop, and VA gets the live frames in order on the two channels.
+
+With the wake sound on, a reply restart gets no history.
+The check after the chime thus does not use the 1000 ms detection-to-start limit.
+Without the wake sound, the limit stays.
+A native test uses a 480 ms stop wait, the 300 ms chime, and a 250 ms interval without main-loop operation. The check occurs 1030 ms after detection.
+
+During a pending restart, a wake word at this time stops a ringing timer, as in the stock timer branch.
+It also cancels the pending restart, because a stock wake word on a ringing timer starts no turn.
+The resolved-config test compares the new branch with the pinned stock timer branch.
+
+A ThreadSanitizer test runs the capture callback in a second task while the main task runs the turn hooks.
+It checks that the two channels stay aligned and that frames stay in order between turn boundaries.
+A reply-restart case sends a VA error during the stop wait. The error cancels the restart and clears its history, as documented.
+A device test must show if HA sends an error for the stopped reply pipeline.
+
+RED on the previous code gave a compile failure for the adapter tests and a failure for the timer case.
+The error case was satisfactory on the previous code, because it tests documented behavior.
+Five scratch mutations each gave a test failure.
+The mutations are:
+
+- `mark_failed()` on a missing buffer.
+- The age limit with the wake sound on.
+- No cancel after the timer stop.
+- No lock in the capture callback.
+- No cancel on a VA error.
+
+Result: `ruff check`, `ruff format --check`, and `mypy` exited 0.
+`pytest tests/` gave `269 passed, 4 deselected`. The 4 tests that did not run use ESPHome code generation. The host did not let it run at test time.
+ESPHome compiles did not run. Run `task compile`, `task compile-pre-roll`, and `task compile-probe` before a release.

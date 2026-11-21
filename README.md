@@ -58,6 +58,7 @@ The current sensitivity applies again 2000 ms after playback ends, with checks a
 
 With restart on, a named wake detection during a VA reply stops it and starts a new wake turn after VA goes to `IDLE`.
 The wait has a 500 ms limit. Stop, timer, mute, and other busy-state decisions stay unchanged.
+During the wait, a wake word also stops a ringing timer as in the stock firmware. This cancels the pending turn.
 Wake words in the middle of a reply usually give no detection in the current checks.
 With 2 s or more of reply left, the detector accepted 0 of 4 test cases.
 See [the wake policy](ARCHITECTURE.md#reply-wake-window) for limits and logs.

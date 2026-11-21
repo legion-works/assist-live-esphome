@@ -89,13 +89,18 @@ The new turn gets the lookback before detection and the continuous bridge throug
 The same 1000 ms total limit applies. The component counts each frame that it removes from the oldest end.
 `pre_roll_ms` reports only history actually sent to VA.
 With the wake sound on, the turn gets the same sound interval and no history, as in an `IDLE` wake turn.
+The 1000 ms detection-to-start limit applies only to a turn with history.
+With the wake sound on, a check after the chime that is late does not cancel the request.
 
 After the chime, the script checks timer and announcement state again before it starts VA.
 If one becomes active, it cancels the pending request and history without a start.
 
 A second named wake during the wait does not queue one more turn.
 Stop during the wait cancels the pending request and its history, then follows the stock stop branch.
+If a timer rings during the wait, a wake word stops it as in the stock timer branch.
+That wake word also cancels the pending request, because a stock wake word on a ringing timer starts no turn.
 Mute, error, and disconnect also cancel the pending request.
+An error from the stopped reply pipeline thus also cancels the request. A device test must show if HA sends such an error.
 Each restart logs `detection_to_idle_ms` and `detection_to_start_ms`.
 See [microphone history](docs/pre-roll.md#reply-stop-and-restart) for the buffer rules.
 
