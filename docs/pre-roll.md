@@ -252,6 +252,7 @@ If the component cannot get memory for the queue, it logs one warning and does n
 The same occurs if the physical microphone does not supply 16 kHz, 32-bit stereo PCM.
 The component then starts and stops the physical microphone for VA and sends its audio directly, with no history.
 Privacy mute continues to send zero samples. Each turn reports `pre_roll_ms` 0.
+A wake word during a reply stops the reply and starts a new turn without history, as with the wake sound on.
 The component counts the starts without history and gives the count in its configuration log.
 
 ## Device test

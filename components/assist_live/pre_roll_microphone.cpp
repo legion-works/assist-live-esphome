@@ -98,8 +98,11 @@ void PreRollMicrophone::push_frames_(const std::vector<uint8_t> &data) {
 void PreRollMicrophone::wake_detected() {
   finish_turn_if_idle();
   LockGuard lock(mutex_);
-  if (!buffer_)
+  if (!buffer_) {
+    // The start consumes a reply request that has no history.
+    reply_pending_ = arm_pending_ = false;
     return;
+  }
   update_mute_();
   auto *va = voice_assistant::global_voice_assistant;
   if (va == nullptr || va->is_running() || turn_active_ || effective_mute_)
@@ -125,8 +128,6 @@ void PreRollMicrophone::wake_detected() {
 void PreRollMicrophone::capture_reply_wake() {
   finish_turn();
   LockGuard lock(mutex_);
-  if (!buffer_)
-    return;
   update_mute_();
   auto *va = voice_assistant::global_voice_assistant;
   if (va == nullptr || !va->is_running() || effective_mute_)
@@ -134,19 +135,20 @@ void PreRollMicrophone::capture_reply_wake() {
   arm_ms_ = AssistLiveComponent::monotonic_ms();
   arm_pending_ = reply_pending_ = true;
   arm_expired_ = passthrough_ = false;
+  // Without the buffer, the request stays so that the new turn starts without history.
+  if (!buffer_)
+    return;
   buffer_->arm(arm_ms_);
   ESP_LOGD(TAG, "Wake detection device_ms=%" PRIu64, buffer_->detection_ms());
 }
 
 bool PreRollMicrophone::reply_wake_ready() {
   LockGuard lock(mutex_);
-  if (!buffer_)
-    return false;
   update_mute_();
   auto *va = voice_assistant::global_voice_assistant;
-  // A wake-sound turn gets no history, so the history age limit applies only without the sound.
+  // A turn without the buffer or with the wake sound gets no history, so the history age limit does not apply.
   return reply_pending_ && arm_pending_ && !effective_mute_ && va != nullptr && !va->is_running() &&
-         (wake_sound_->state ||
+         (!buffer_ || wake_sound_->state ||
           AssistLiveComponent::monotonic_ms() - arm_ms_ <= PreRollBuffer::MAX_ARM_TO_START_MS);
 }
 

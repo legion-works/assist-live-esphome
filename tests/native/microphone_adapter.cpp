@@ -594,6 +594,90 @@ static void allocation_failure_passes_audio_through() {
   std::cout << "PASS allocation failure pass-through\n";
 }
 
+// Without the buffer, a wake word during a reply must still start a new turn, without history.
+static void reply_restart_without_buffer() {
+  PhysicalMicrophone physical;
+  switch_::Switch wake_sound;
+  TimingComponent parent;
+  voice_assistant::VoiceAssistant va;
+  voice_assistant::global_voice_assistant = &va;
+  PreRollMicrophone mic;
+  mic.set_source(&physical);
+  mic.set_wake_sound(&wake_sound);
+  mic.set_parent(&parent);
+  test_allocation_fails = true;
+  mic.setup();
+  test_allocation_fails = false;
+  parent.set_pre_roll(&mic);
+  parent.setup();
+  std::vector<StereoFrame> received;
+  mic.add_data_callback([&](const std::vector<uint8_t> &data) {
+    const auto first = received.size();
+    received.resize(first + data.size() / sizeof(StereoFrame));
+    std::memcpy(received.data() + first, data.data(), data.size());
+  });
+  auto feed = [&](int first) {
+    std::vector<uint8_t> data(256 * sizeof(StereoFrame));
+    for (int i = 0; i < 256; ++i) {
+      StereoFrame frame{first + i, -first - i};
+      std::memcpy(data.data() + i * sizeof(frame), &frame, sizeof(frame));
+    }
+    physical.send(data);
+  };
+  for (bool late : {false, true}) {
+    mic.start();
+    va.running = true;
+    set_time(100);
+    mic.capture_reply_wake();
+    assert(!mic.reply_wake_ready() && "busy VA cannot start the new turn");
+    mic.stop();
+    set_time(580);
+    va.running = false;
+    mic.finish_turn_if_idle();
+    assert(mic.reply_wake_ready() && "idle VA can start the reply turn without the buffer");
+    if (late) {
+      // A turn without history has no detection-to-start limit.
+      set_time(1130);
+      assert(mic.reply_wake_ready());
+    }
+    mic.wake_detected();
+    va.running = true;
+    mic.wake_started();
+    assert(!mic.reply_wake_ready() && "the start consumes the reply request");
+    mic.start();
+    mic.loop();
+    assert(mic.is_running());
+    parent.command_stream_start();
+    mic.begin_turn();
+    mic.listening();
+    received.clear();
+    feed(1000);
+    assert(received.size() == 256 && received.front().left == 1000 && "live audio passes straight through");
+    assert(mic.pre_roll_ms() == 0);
+    const auto event = parent.take();
+    assert(event.stage == Stage::MIC_OPEN && std::string(event.data).find("\"pre_roll_ms\":0") != std::string::npos);
+    mic.finish_turn();
+    va.running = false;
+    parent.command_stream_end();
+    mic.stop();
+  }
+  va.running = true;
+  mic.start();
+  mic.capture_reply_wake();
+  mic.set_privacy_mute(true);
+  va.running = false;
+  assert(!mic.reply_wake_ready() && "mute cancels the request without the buffer");
+  mic.set_privacy_mute(false);
+  va.running = true;
+  mic.capture_reply_wake();
+  mic.clear();
+  va.running = false;
+  assert(!mic.reply_wake_ready() && "error or disconnect cancels the request without the buffer");
+  mic.stop();
+  voice_assistant::global_voice_assistant = nullptr;
+  std::cout << "PASS reply restart without buffer\n";
+}
+
 // VA must get the same bytes and stream format as on the stock direct route to the physical microphone.
 static void wrong_format_passes_audio_through() {
   class OtherFormatMicrophone : public PhysicalMicrophone {
@@ -901,6 +985,7 @@ int main(int argc, char **argv) {
   }
   allocation_failure_passes_audio_through();
   wrong_format_passes_audio_through();
+  reply_restart_without_buffer();
   reply_wake_chime_after_history_limit(true);
   reply_wake_chime_after_history_limit(false);
   concurrent_receive_and_hooks();
