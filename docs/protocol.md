@@ -70,8 +70,10 @@ This time is not the acoustic end of the wake word or the time of inference in t
 
 The example and the pre-roll probe use one replacement handler in `examples/wake-word.yaml`.
 It keeps all stock wake `actions`, with mute, timer, and stop-word behavior.
-The pre-roll overlay changes only the arm slot before `voice_assistant.start`.
-The default arm slot does nothing.
+The pre-roll overlay supplies arm calls before and after `voice_assistant.start`, plus reply capture, readiness, and cancellation hooks.
+These slots do nothing in the base example, and its readiness check gives `true`.
+The reply-window and reply-restart options each default to `'false'`.
+See [the reply wake policy](../ARCHITECTURE.md#reply-wake-window) for the opt-in behavior.
 
 ESPHome concatenates `action` lists, which puts an appended timing `action` after the stock `delay`.
 The public `Trigger` cannot accept a second automation without replacement of the stock automation.
@@ -187,7 +189,7 @@ A local send alone cannot prove that the server accepted an event.
 The counter includes queue overflow, unavailable workers, resolution failures, and local send failures.
 It cannot count UDP packets missing at the server without a local error.
 
-Device trial not run: no test device at this time.
+A device trial must select the transport.
 Compile and native simulation results do not prove unchanged native-function latency on hardware.
 
 ## Sources

@@ -2,9 +2,12 @@
 
 | Path | Purpose |
 | --- | --- |
-| `components/assist_live/` | Python schema, authenticated event codec, and bounded timing sender |
+| `components/assist_live/` | Python schema, authenticated event codec, timing sender, optional microphone history, diagnostics, and reply-window policy |
 | `examples/voice-pe.yaml` | Local-source example that extends the stock Voice PE package |
+| `examples/voice-pe-pre-roll.yaml` | Opt-in example with microphone history and diagnostic entities |
+| `examples/pre-roll.yaml` | Virtual-microphone configuration and stock turn and mute hooks |
 | `examples/wake-word*.yaml` | Shared stock handler and config-time experimental option fragments |
+| `tests/fixtures/voice-pe-pre-roll.yaml` | Compile fixture with microphone history and diagnostic entities |
 | `tests/fixtures/voice-pe-reply-wake.yaml` | Pre-roll compile fixture with the two reply options on |
 | `tests/test_package.py` | Source-only boundary test |
 | `tests/fixtures/voice-pe.yaml` | Compile-only configuration |
@@ -31,7 +34,18 @@
 | `tools/check_bootstrap.py` | Source, package, license, and privacy checks |
 | `docs/verification.md` | Test commands, results, and source URLs |
 | `docs/protocol.md` | Server-contract URL, credential rules, and firmware signal limits |
+| `docs/pre-roll.md` | Microphone history configuration, turn boundaries, replay limits, and device-test procedure |
 | `docs/diagnostics.md` | Optional device entities, units, counters, and publication limits |
+| `components/assist_live/pre_roll_buffer.h` | Bounded stereo history and replay pacing |
+| `components/assist_live/pre_roll_microphone.*` | Physical-microphone adapter, turn hooks, and mute hooks |
+| `components/assist_live/reply_wake_window.h` | Reply-window cutoff policy and tail limits |
+| `tests/test_pre_roll.py` | Schema, native adapter, replay, and stock-handler checks |
+| `tests/native/pre_roll.cpp` | Synthetic stereo history and pacing harness |
+| `tests/native/microphone_adapter.cpp` | Actual microphone adapter harness with stock microphone-source code |
+| `tests/test_reply_wake.py` | Native reply-window policy, callback, and resolved-config checks |
+| `tests/test_reply_barge.py` | Reply stop, restart, and cancellation checks |
+| `tests/test_reply_options.py` | Reply-option combinations and default-off checks |
+| `tests/probes/pre-roll.yaml` | Opt-in pre-roll device-test configuration with external secrets |
 | `components/assist_live/diagnostic_state.h` | Completed-turn snapshot and counter publication schedule |
 | `components/assist_live/diagnostic_publisher.h` | Public sensor and binary-sensor publication |
 | `tests/test_diagnostics.py` | Native and resolved-config diagnostic checks |

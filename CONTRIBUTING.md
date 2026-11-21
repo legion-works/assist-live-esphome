@@ -7,6 +7,8 @@ Keep each change small for review.
 ## Development
 
 Install `uv`, Task, `actionlint`, and Gitleaks.
+Use Python `>=3.12.0,<3.15` and a system C++20 compiler for the native tests.
+The native runtime tests download the ArduinoJson header and check its SHA-256.
 Use the checked-in lock file. Run the complete check from the repository root:
 
 ```sh

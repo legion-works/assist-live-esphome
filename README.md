@@ -11,6 +11,7 @@ The stock package keeps control of voice, wake words, timers, and the media play
 ## Development check
 
 Install `uv`, Task, `actionlint`, and Gitleaks.
+Native tests use a system C++20 compiler.
 Run the complete check from the repository root:
 
 ```sh
@@ -48,7 +49,12 @@ Put the actual `secrets.yaml` adjacent to that copy, not in this repository.
 
 Set `assist_live_device`, `assist_live_hmac_key`, and `assist_live_server` in the external secrets file.
 The example uses them as the anonymous device identifier, 32-byte hexadecimal HMAC key, and server address.
-It selects UDP timing events. No device trial or transport selection result is available.
+It selects UDP timing events. No transport selection result is available.
+
+The optional [microphone history](docs/pre-roll.md) keeps audio from before wake detection for wake-word turns with the wake sound off.
+Its lookback defaults to 200 ms. The base example keeps it off.
+Use [examples/voice-pe-pre-roll.yaml](examples/voice-pe-pre-roll.yaml) for the history option and [device diagnostics](docs/diagnostics.md).
+The diagnostics report completed-turn measurements and timing-sender counters through optional Home Assistant entities.
 
 The experimental `assist_live_reply_window` and `assist_live_reply_restart` options are each `'false'` by default, also with pre-roll.
 Keep them off until device tests give satisfactory results. Enable them independently.
@@ -59,6 +65,7 @@ The current sensitivity applies again 2000 ms after playback ends, with checks a
 With restart on, a named wake detection during a VA reply stops it and starts a new wake turn after VA goes to `IDLE`.
 The wait has a 500 ms limit. Stop, mute, and other busy-state decisions stay unchanged.
 During the wait, a wake word also stops a ringing timer as in the stock firmware. This cancels the pending turn.
+
 Wake words in the middle of a reply usually give no detection in the current checks.
 With 2 s or more of reply left, the detector accepted 0 of 4 test cases.
 See [the wake policy](ARCHITECTURE.md#reply-wake-window) for limits and logs.

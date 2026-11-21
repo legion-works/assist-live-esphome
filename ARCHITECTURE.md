@@ -4,7 +4,7 @@
 
 ESPHome loads `components/assist_live/__init__.py` as an external component.
 The schema has these necessary fields: `device`, `hmac_key`, `server`, `transport`, and `media_player_id`.
-It accepts `port` (default `8765`), an identifier, and the standard component options.
+It accepts `port` (default `8765`), an identifier, optional `pre_roll` and `diagnostics` sections, and the standard component options.
 ESP32 with the ESP-IDF framework is necessary.
 `to_code(config)` makes `assist_live::AssistLiveComponent` and calls `register_component`.
 
@@ -15,6 +15,8 @@ Callbacks enqueue events without a wait. Resolution, signing, and network operat
 Its `dump_config()` prints the transport and counters, not the key.
 
 See [device timing events](docs/protocol.md) for retry, shutdown, and signal limits.
+See [microphone history](docs/pre-roll.md) for the optional virtual microphone, replay limits, and turn boundaries.
+See [device diagnostics](docs/diagnostics.md) for optional completed-turn measurements and timing-sender counters.
 
 ## Stock package
 
@@ -88,6 +90,7 @@ At `IDLE`, the usual pre-start arm uses the saved detection time and audio.
 The new turn gets the lookback before detection and the continuous bridge through stop and start.
 The same 1000 ms total limit applies. The component counts each frame that it removes from the oldest end.
 `pre_roll_ms` reports only history actually sent to VA.
+
 With the wake sound on, the turn gets the same sound interval and no history, as in an `IDLE` wake turn.
 The 1000 ms detection-to-start limit applies only to a turn with history.
 With the wake sound on, a check after the chime that is late does not cancel the request.
@@ -99,6 +102,7 @@ A second named wake during the wait does not queue one more turn.
 Stop during the wait cancels the pending request and its history, then follows the stock stop branch.
 If a timer rings during the wait, a wake word stops it as in the stock timer branch.
 That wake word also cancels the pending request, because a stock wake word on a ringing timer starts no turn.
+
 Mute, error, and disconnect also cancel the pending request.
 An error from the stopped reply pipeline thus also cancels the request. A device test must show if HA sends such an error.
 Each restart logs `detection_to_idle_ms` and `detection_to_start_ms`.
