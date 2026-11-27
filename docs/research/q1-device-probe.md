@@ -335,6 +335,13 @@ uv run --locked python tools/probe_device.py --arm --events 1000 --reconnects 10
 That command writes a different trial result file. The receiver refuses this hand-written research record as an output path.
 It also writes `docs/research/q1-device-trial.events.jsonl` with decoded measurement data and the same trial identifier.
 
+The receiver refuses a report path if the report or its `.events.jsonl` file is an input or a trial record.
+The inputs are the secrets file and the sample file. The trial records are the packet log and the salt.
+A second name for one of these files gets the same refusal.
+This check occurs before the receiver reads or makes a file, and again before each report write.
+
+If the secrets file has an error, the error gives only the file and the line number.
+
 Use `--seconds` to change the bounded capture period.
 Use `--sample`, not `--arm`, to read recorded JSONL data without network access.
 Use the external packet log, not `.events.jsonl`, with `--sample`.

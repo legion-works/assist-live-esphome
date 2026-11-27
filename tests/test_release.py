@@ -71,6 +71,112 @@ def test_release_archive_is_inspected(tmp_path: Path, archive_type: str) -> None
     assert check_release([archive])
 
 
+class Zeros(io.RawIOBase):
+    def __init__(self, size: int) -> None:
+        self.left = size
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        count = min(len(buffer), self.left)
+        buffer[:count] = b"\0" * count
+        self.left -= count
+        return count
+
+
+def large_archive(tmp_path: Path, archive_type: str, size: int) -> Path:
+    archive = tmp_path / f"source.{archive_type}"
+    if archive_type == "tar.gz":
+        with tarfile.open(archive, "w:gz") as target:
+            member = tarfile.TarInfo("source/large.txt")
+            member.size = size
+            target.addfile(member, Zeros(size))
+    else:
+        with (
+            zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zip_target,
+            zip_target.open("source/large.txt", "w") as zip_member,
+        ):
+            for _ in range(size >> 20):
+                zip_member.write(b"\0" * (1 << 20))
+    return archive
+
+
+@pytest.mark.parametrize("archive_type", ["tar.gz", "zip"])
+def test_large_archive_member_is_read_in_bounded_chunks(
+    tmp_path: Path, archive_type: str
+) -> None:
+    import tracemalloc
+
+    from tools.check_release import check_release
+
+    archive = large_archive(tmp_path, archive_type, 64 << 20)
+    tracemalloc.start()
+    try:
+        failures = check_release([archive])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert failures == []
+    assert peak < 8 << 20
+
+
+@pytest.mark.parametrize("archive_type", ["tar.gz", "zip"])
+def test_archive_member_size_limit_is_a_named_refusal(
+    tmp_path: Path, archive_type: str, monkeypatch
+) -> None:
+    from tools import check_release
+
+    monkeypatch.setattr(check_release, "MEMBER_LIMIT_BYTES", 1 << 20)
+    archive = large_archive(tmp_path, archive_type, 2 << 20)
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}!source/large.txt: archive member size limit"
+    ]
+
+
+def nested_archive(tmp_path: Path, members: int, size: int) -> Path:
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as target:
+        for index in range(members):
+            target.writestr(f"source/{index}.txt", b"a" * size)
+    # gzip hides the inner end record, so the outer file is read as a tar.
+    archive = tmp_path / "source.tar.gz"
+    with tarfile.open(archive, "w:gz") as target:
+        member = tarfile.TarInfo("source/inner.zip")
+        member.size = len(inner.getvalue())
+        target.addfile(member, io.BytesIO(inner.getvalue()))
+    return archive
+
+
+@pytest.mark.parametrize("limit", ["entries", "bytes"])
+def test_archive_budget_covers_nested_members(
+    tmp_path: Path, monkeypatch, limit: str
+) -> None:
+    from tools import check_release
+
+    archive = nested_archive(tmp_path, 8, 1 << 16)
+    assert check_release.check_release([archive]) == []
+    if limit == "entries":
+        monkeypatch.setattr(check_release, "ARCHIVE_ENTRY_LIMIT", 5)
+        expected = f"{archive.name}: archive entry limit"
+    else:
+        monkeypatch.setattr(check_release, "ARCHIVE_LIMIT_BYTES", 5 << 16)
+        expected = f"{archive.name}: archive expansion limit"
+    assert check_release.check_release([archive]) == [expected]
+
+
+def test_archive_budget_is_separate_for_each_release_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tools import check_release
+
+    monkeypatch.setattr(check_release, "ARCHIVE_ENTRY_LIMIT", 9)
+    first = nested_archive(tmp_path, 8, 16)
+    second = first.rename(tmp_path / "second.tar.gz")
+    first = nested_archive(tmp_path, 8, 16)
+    assert check_release.check_release([first, second]) == []
+
+
 def test_source_passes_and_failures_are_collected(tmp_path: Path) -> None:
     from tools.check_release import check_release
 

@@ -11,6 +11,7 @@ import re
 import shutil
 import struct
 import time
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -40,13 +41,44 @@ def secret_reference(loader: ProbeLoader, node: yaml.Node) -> dict[str, str]:
 ProbeLoader.add_constructor("!secret", secret_reference)
 
 
+class SecretsLoader(yaml.SafeLoader):
+    def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
+        # For a typed scalar, the constructor error can contain the value.
+        # Keep only the position of the node.
+        try:
+            return super().construct_object(node, deep)
+        except yaml.YAMLError:
+            raise
+        except Exception:
+            raise yaml.constructor.ConstructorError(
+                problem="invalid value", problem_mark=node.start_mark
+            ) from None
+
+
+TRIAL_RECORD = re.compile(r"q1-[0-9a-f]{32}\.(?:jsonl|salt)")
+
+
 def read_secrets(path: Path) -> dict[str, str]:
     fixture = ROOT / "tests/fixtures/secrets.yaml"
     if path.resolve() == fixture.resolve() or path.read_bytes() == fixture.read_bytes():
         raise ValueError("compile fixture secrets are not permitted")
     if path.resolve().is_relative_to(ROOT):
         raise ValueError("secrets must be outside the repository")
-    values = yaml.safe_load(path.read_text())
+    data = path.read_bytes()
+    line: str | None = None
+    try:
+        values = yaml.load(data, Loader=SecretsLoader)
+    except Exception as error:
+        # The message of a parse error can contain the source line, and thus a
+        # credential. Report only the file and the line number. Make the new
+        # error after the `except` statement, so that it does not include the
+        # first error.
+        mark = getattr(error, "problem_mark", None) or getattr(
+            error, "context_mark", None
+        )
+        line = f" at line {mark.line + 1}" if mark is not None else ""
+    if line is not None:
+        raise ValueError(f"{path}: invalid YAML{line}")
     if not isinstance(values, dict) or any(
         not isinstance(values.get(k), str) or not values[k].strip() for k in REQUIRED
     ):
@@ -57,8 +89,51 @@ def read_secrets(path: Path) -> dict[str, str]:
         raise ValueError("device token must have 32 to 128 ASCII token characters")
     if not re.fullmatch(r"[0-9a-f]{32}", values["probe_run_id"]):
         raise ValueError("probe_run_id must have 32 lowercase hex characters")
-    ipaddress.IPv4Address(values["assist_live_server"])
+    try:
+        ipaddress.IPv4Address(values["assist_live_server"])
+    except ValueError:
+        raise ValueError("assist_live_server must be an IPv4 address") from None
     return values
+
+
+def refuse_report_aliases(report: Path, secrets: Path, sample: Path | None) -> None:
+    """Refuse report paths that resolve to an input or to a trial record.
+
+    The names of the packet log and the salt contain the run identifier from
+    the secrets file. This check runs before the tool reads the secrets file.
+    Thus it refuses each name of that form in the secrets directory.
+    """
+    evidence = secrets.resolve().parent
+    inputs = [secrets, *([sample] if sample is not None else [])]
+    protected = file_identities(protected_files(secrets, sample))
+    for output in (report, report.with_suffix(".events.jsonl")):
+        target = output.resolve()
+        if target.parent == evidence and TRIAL_RECORD.fullmatch(target.name):
+            raise ValueError("trial report must not replace a trial record")
+        if any(target == path.resolve() for path in inputs):
+            raise ValueError("trial report must not replace an input file")
+        if file_identities([target]) & protected:
+            raise ValueError("trial report must not replace an input or trial record")
+
+
+def protected_files(secrets: Path, sample: Path | None) -> list[Path]:
+    """Give the inputs and each trial record in the secrets directory."""
+    directory = secrets.resolve().parent
+    records = sorted(
+        path for path in directory.iterdir() if TRIAL_RECORD.fullmatch(path.name)
+    )
+    return [secrets, *([sample] if sample is not None else []), *records]
+
+
+def file_identities(paths: Iterable[Path]) -> set[tuple[int, int]]:
+    identities = set()
+    for path in paths:
+        try:
+            status = path.stat()
+        except FileNotFoundError:
+            continue
+        identities.add((status.st_dev, status.st_ino))
+    return identities
 
 
 def stage(config: Path, secrets: Path, output: Path) -> None:
@@ -245,6 +320,7 @@ def write_report(
     reconnects: int,
     *,
     recorded: bool = False,
+    protected: Sequence[Path] = (),
 ) -> None:
     if path.resolve() == (ROOT / "docs/research/q1-device-probe.md").resolve():
         raise ValueError("trial report must not replace the research record")
@@ -290,10 +366,32 @@ def write_report(
                 "",
             ]
         )
-    path.with_suffix(".events.jsonl").write_text(
-        "".join(json.dumps(event) + "\n" for event in reader.events)
-    )
-    path.write_text("\n".join(lines))
+    outputs = {
+        path.with_suffix(".events.jsonl"): "".join(
+            json.dumps(event) + "\n" for event in reader.events
+        ),
+        path: "\n".join(lines),
+    }
+    # Open without truncation and compare the opened file with the inputs and
+    # the trial records. Thus a file name that someone adds after the first
+    # check cannot replace a record.
+    identities = file_identities(protected)
+    targets = []
+    try:
+        for output in outputs:
+            target = os.fdopen(os.open(output, os.O_WRONLY | os.O_CREAT, 0o666), "w")
+            targets.append(target)
+            status = os.fstat(target.fileno())
+            if (status.st_dev, status.st_ino) in identities:
+                raise ValueError(
+                    "trial report must not replace an input or trial record"
+                )
+        for target, text in zip(targets, outputs.values(), strict=True):
+            target.truncate(0)
+            target.write(text)
+    finally:
+        for target in targets:
+            target.close()
 
 
 async def read_frame(reader: asyncio.StreamReader) -> bytes | None:
@@ -439,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("trial report must not replace the research record")
         if not 1 <= args.seconds <= 600:
             parser.error("--seconds must be 1 to 600")
+        refuse_report_aliases(args.report, args.secrets, args.sample)
         secrets = read_secrets(args.secrets)
         reader = EvidenceReader(
             secrets["assist_live_device_token"],
@@ -465,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
             args.events,
             args.reconnects,
             recorded=args.sample is not None,
+            protected=protected_files(args.secrets, args.sample),
         )
         if reader.identity is None:
             print("FAIL probe evidence: no authenticated device events")

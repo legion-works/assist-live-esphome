@@ -87,6 +87,48 @@ def test_release_guard_fails_closed(name: str) -> None:
             assert run.returncode == (0 if value == "true" else 1)
 
 
+@pytest.mark.parametrize("name", ["release-please.yml", "release-artifacts.yml"])
+def test_release_source_gate_runs_without_ambient_pyyaml(tmp_path, name):
+    steps = [
+        step for job in load_workflow(name)["jobs"].values() for step in job["steps"]
+    ]
+    runs = [step.get("run", "") for step in steps]
+    gate = next(
+        index
+        for index, run in enumerate(runs)
+        if "check_release.py --source-only" in run
+    )
+    assert any(
+        step.get("uses", "").startswith("astral-sh/setup-uv@") for step in steps[:gate]
+    )
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    # -S removes site-packages: the runner Python has no PyYAML.
+    (binary / "python").write_text(f'#!/bin/sh\nexec {sys.executable} -I -S "$@"\n')
+    (binary / "uv").write_text(
+        f"#!{sys.executable}\nimport os, sys\n"
+        "args = sys.argv[1:]\n"
+        "assert args[:3] == ['run', '--locked', 'python'], args\n"
+        "os.execv(sys.executable, [sys.executable, *args[3:]])\n"
+    )
+    for tool in ("python", "uv"):
+        (binary / tool).chmod(0o700)
+    result = subprocess.run(
+        ["bash", "-e", "-c", runs[gate]],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{binary}{os.pathsep}{os.environ['PATH']}",
+            "RUNNER_TEMP": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS source-only release" in result.stdout
+
+
 @pytest.mark.parametrize(
     "original",
     [
@@ -308,21 +350,31 @@ def test_worktree_checks_accept_unstaged_deletions(monkeypatch, capsys, tool):
     assert expected in capsys.readouterr().out
 
 
+PINNED_CHECKER = re.compile(
+    r"https://raw\.githubusercontent\.com/legion-works/assist-live/"
+    r"[0-9a-f]{40}/tools/check_public_tree\.py"
+)
+PINNED_DIGEST = re.compile(
+    r'echo "([0-9a-f]{64})  \$RUNNER_TEMP/check_public_tree\.py" \| sha256sum -c -'
+)
+
+
 @pytest.mark.parametrize(
-    "source,present,denylist,scan_exit,download_exit",
+    "source,present,denylist,scan_exit,download_exit,tampered",
     [
-        ("task", False, False, 0, 0),
-        ("task", True, False, 0, 0),
-        ("task", True, True, 0, 0),
-        ("task", True, True, 17, 0),
-        ("ci", True, False, 0, 0),
-        ("ci", True, True, 0, 0),
-        ("ci", True, True, 17, 0),
-        ("ci", True, False, 0, 22),
+        ("task", False, False, 0, 0, False),
+        ("task", True, False, 0, 0, False),
+        ("task", True, True, 0, 0, False),
+        ("task", True, True, 17, 0, False),
+        ("ci", True, False, 0, 0, False),
+        ("ci", True, True, 0, 0, False),
+        ("ci", True, True, 17, 0, False),
+        ("ci", True, False, 0, 22, False),
+        ("ci", True, False, 0, 0, True),
     ],
 )
 def test_external_privacy_command(
-    tmp_path, source, present, denylist, scan_exit, download_exit
+    tmp_path, source, present, denylist, scan_exit, download_exit, tampered
 ):
     if source == "task":
         tasks = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]
@@ -336,6 +388,11 @@ def test_external_privacy_command(
         ]
         assert len(commands) == 1, "CI must run the authoritative checker explicitly"
         script = commands[0]
+        pinned = PINNED_DIGEST.search(script)
+        assert pinned is not None, "CI must check the pinned checker digest"
+        assert script.index(pinned[0]) < script.index("uv run")
+        # The stub download writes b"checker": the test pins its digest.
+        script = script.replace(pinned[1], hashlib.sha256(b"checker").hexdigest())
     firmware = tmp_path / "firmware"
     firmware.mkdir()
     if present:
@@ -351,7 +408,7 @@ def test_external_privacy_command(
         'Path(os.environ["CURL_CAPTURE"]).write_text(json.dumps(sys.argv[1:]))\n'
         'if int(os.environ["DOWNLOAD_EXIT"]):\n'
         '    sys.exit(int(os.environ["DOWNLOAD_EXIT"]))\n'
-        'Path(sys.argv[sys.argv.index("-o") + 1]).write_text("checker")\n'
+        'Path(sys.argv[sys.argv.index("-o") + 1]).write_text(os.environ["BYTES"])\n'
     )
     curl.chmod(0o700)
     uv = binary / "uv"
@@ -376,6 +433,7 @@ def test_external_privacy_command(
         RUNNER_TEMP=str(tmp_path),
         CURL_CAPTURE=str(curl_capture),
         DOWNLOAD_EXIT=str(download_exit),
+        BYTES="changed checker" if tampered else "checker",
     )
     if denylist:
         env["PRIVATE_DENYLIST"] = str(tmp_path / "private denylist.txt")
@@ -387,18 +445,17 @@ def test_external_privacy_command(
         text=True,
         timeout=10,
     )
-    assert result.returncode == (download_exit or (scan_exit if present else 0)), (
-        result.stdout + result.stderr
-    )
-    assert result.stderr == ""
+    expected_exit = download_exit or int(tampered) or (scan_exit if present else 0)
+    assert result.returncode == expected_exit, result.stdout + result.stderr
+    assert (result.stderr != "") == tampered
     if source == "ci":
-        assert json.loads(curl_capture.read_text()) == [
-            "-fsSL",
-            "https://raw.githubusercontent.com/legion-works/assist-live/main/tools/check_public_tree.py",
+        url = json.loads(curl_capture.read_text())
+        assert url[0] == "-fsSL" and url[2:] == [
             "-o",
             str(tmp_path / "check_public_tree.py"),
         ]
-    if download_exit:
+        assert PINNED_CHECKER.fullmatch(url[1])
+    if download_exit or tampered:
         assert not capture.exists()
         return
     if present:
@@ -421,12 +478,7 @@ def test_external_privacy_command(
         if denylist:
             expected += ["--private-denylist", env["PRIVATE_DENYLIST"]]
         assert json.loads(capture.read_text()) == expected
-        prefix = (
-            f"{hashlib.sha256(b'checker').hexdigest()}  "
-            f"{tmp_path / 'check_public_tree.py'}\n"
-            if source == "ci"
-            else ""
-        )
+        prefix = f"{tmp_path / 'check_public_tree.py'}: OK\n" if source == "ci" else ""
         assert result.stdout == prefix + "PASS external public tree\n"
     else:
         assert not capture.exists()

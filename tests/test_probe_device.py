@@ -630,6 +630,192 @@ def test_cli_refuses_research_output_before_reading_secrets(tmp_path, monkeypatc
         )
 
 
+@pytest.mark.parametrize(
+    "alias",
+    ["secrets", "symlink", "hardlink", "sample", "derived", "salt", "raw"],
+)
+def test_cli_refuses_report_aliases_before_any_access(
+    tmp_path, monkeypatch, capsys, alias
+):
+    from tools import probe_device
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("an aliased report must stop before input access")
+
+    for name in ("read_secrets", "load_trial_salt", "receive"):
+        monkeypatch.setattr(probe_device, name, forbidden)
+    secret = secrets_file(tmp_path)
+    sample = tmp_path / "sample.jsonl"
+    sample.write_text("")
+    report = {
+        "secrets": secret,
+        "symlink": tmp_path / "link.md",
+        "hardlink": tmp_path / "hard.md",
+        "sample": sample,
+        "derived": tmp_path / "sample.md",
+        "salt": tmp_path / f"q1-{RUN}.salt",
+        "raw": tmp_path / f"q1-{RUN}.jsonl",
+    }[alias]
+    if alias == "symlink":
+        report.symlink_to(secret)
+    if alias == "hardlink":
+        os.link(secret, report)
+    if alias == "derived":
+        sample = sample.rename(tmp_path / "sample.events.jsonl")
+    before = {path: path.read_bytes() for path in (secret, sample)}
+    names = sorted(path.name for path in tmp_path.iterdir())
+    mode = (
+        ["--arm", "--bind", "192.0.2.2"]
+        if alias == "raw"
+        else ["--sample", str(sample)]
+    )
+    argv = [*mode, "--secrets", str(secret), "--report", str(report)]
+    assert probe_device.main(argv) == 1
+    assert "must not replace" in capsys.readouterr().out
+    assert {path: path.read_bytes() for path in before} == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == names
+
+
+@pytest.mark.parametrize("slot", ["report", "events"])
+@pytest.mark.parametrize("evidence", ["salt", "jsonl"])
+def test_cli_refuses_hard_links_to_trial_records_before_any_access(
+    tmp_path, monkeypatch, capsys, slot, evidence
+):
+    from tools import probe_device
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("an aliased report must stop before input access")
+
+    for name in ("read_secrets", "load_trial_salt", "receive"):
+        monkeypatch.setattr(probe_device, name, forbidden)
+    secret = secrets_file(tmp_path)
+    sample = tmp_path / "sample.jsonl"
+    sample.write_text("")
+    record = tmp_path / f"q1-{RUN}.{evidence}"
+    record.write_bytes(b"synthetic trial record\n")
+    report = tmp_path / "trial.md"
+    os.link(record, report if slot == "report" else tmp_path / "trial.events.jsonl")
+    argv = ["--sample", str(sample), "--secrets", str(secret), "--report"]
+    assert probe_device.main([*argv, str(report)]) == 1
+    assert "must not replace" in capsys.readouterr().out
+    assert record.read_bytes() == b"synthetic trial record\n"
+
+
+@pytest.mark.parametrize("slot", ["report", "events"])
+def test_report_write_refuses_a_trial_record_link_made_after_preflight(
+    tmp_path, monkeypatch, capsys, slot
+):
+    from tools import probe_device
+
+    original = probe_device.load_trial_salt
+    report = tmp_path / "trial.md"
+    target = report if slot == "report" else tmp_path / "trial.events.jsonl"
+
+    def salt_then_link(directory, run_id):
+        salt = original(directory, run_id)
+        os.link(directory / f"q1-{run_id}.salt", target)
+        return salt
+
+    monkeypatch.setattr(probe_device, "load_trial_salt", salt_then_link)
+    sample = tmp_path / "sample.jsonl"
+    sample.write_text("")
+    argv = ["--sample", str(sample), "--secrets", str(secrets_file(tmp_path))]
+    assert probe_device.main([*argv, "--report", str(report)]) == 1
+    assert "must not replace" in capsys.readouterr().out
+    salt = tmp_path / f"q1-{RUN}.salt"
+    assert len(salt.read_bytes()) == 32
+
+
+SECRET_MARKER = "synthetic-credential-marker-7f3c"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f'wifi_ssid: test\nwifi_password: "{SECRET_MARKER}\n',
+        f"wifi_ssid: test\nwifi_password: !!int {SECRET_MARKER}\n",
+        f"wifi_ssid: test\nwifi_password: !!float {SECRET_MARKER}\n",
+        f"wifi_ssid: test\nwifi_password: !!bool {SECRET_MARKER}\n",
+        f"wifi_ssid: test\nwifi_password: !!timestamp {SECRET_MARKER}\n",
+        f"wifi_ssid: test\nwifi_password: !!timestamp 2026-13-45 {SECRET_MARKER}\n",
+        f"wifi_ssid: test\nwifi_password: !!binary {SECRET_MARKER}!\n",
+        f"wifi_password: {SECRET_MARKER}\nnested: " + "[" * 20000 + "\n",
+        f"- {SECRET_MARKER}\n",
+        f"{SECRET_MARKER}\n",
+    ],
+    ids=[
+        "scanner",
+        "int",
+        "float",
+        "bool",
+        "timestamp",
+        "bad-date",
+        "binary",
+        "deep",
+        "list",
+        "scalar",
+    ],
+)
+def test_malformed_secrets_never_print_secret_text(tmp_path, text):
+    secret = tmp_path / "external.yaml"
+    secret.write_text(text)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools/probe_device.py"),
+            "--sample",
+            str(tmp_path / "sample.jsonl"),
+            "--secrets",
+            str(secret),
+            "--report",
+            str(tmp_path / "report.md"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert SECRET_MARKER not in result.stdout + result.stderr
+    assert result.stderr == ""
+    assert result.stdout.startswith("FAIL probe: ValueError: ")
+
+
+def test_malformed_secrets_error_has_no_chained_exception(tmp_path):
+    from tools.probe_device import read_secrets
+
+    secret = tmp_path / "external.yaml"
+    secret.write_text(f"wifi_ssid: test\nwifi_password: !!int {SECRET_MARKER}\n")
+    with pytest.raises(ValueError) as error:
+        read_secrets(secret)
+    assert str(error.value) == f"{secret}: invalid YAML at line 2"
+    assert error.value.__cause__ is None and error.value.__context__ is None
+
+
+def test_malformed_secrets_report_file_and_line_without_source_text(tmp_path, capsys):
+    from tools.probe_device import main
+
+    marker = "synthetic-credential-marker-7f3c"
+    secret = tmp_path / "external.yaml"
+    secret.write_text(f'wifi_ssid: test\nwifi_password: "{marker}\n')
+    argv = ["--sample", str(tmp_path / "sample.jsonl"), "--secrets", str(secret)]
+    assert main([*argv, "--report", str(tmp_path / "report.md")]) == 1
+    output = capsys.readouterr().out
+    assert marker not in output
+    assert f"{secret}: invalid YAML at line " in output
+
+
+def test_invalid_server_address_error_has_no_secret_value(tmp_path):
+    from tools.probe_device import read_secrets
+
+    secret = secrets_file(tmp_path)
+    marker = "synthetic-server-marker-7f3c"
+    secret.write_text(secret.read_text().replace("192.0.2.1", marker))
+    with pytest.raises(ValueError) as error:
+        read_secrets(secret)
+    assert marker not in str(error.value)
+    assert error.value.__suppress_context__
+
+
 @pytest.mark.parametrize("device", ["", "bad name", "a" * 64, "node`"])
 def test_decoder_refuses_invalid_node_names(device):
     from tools.probe_device import decode_event

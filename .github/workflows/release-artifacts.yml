@@ -17,7 +17,13 @@ jobs:
       - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
           python-version: '3.12'
+      - uses: astral-sh/setup-uv@85856786d1ce8acfbcc2f13a5f3fbd6b938f9f41 # v7.1.2
+        with:
+          version: '0.13.1'
+      # The locked environment supplies PyYAML for the release checker.
       - name: Check source archive without publication
+        env:
+          UV_LINK_MODE: copy
         run: |
           git archive --format=tar.gz --prefix=assist-live-esphome/ HEAD -o "$RUNNER_TEMP/source.tar.gz"
-          python tools/check_release.py --source-only "$RUNNER_TEMP/source.tar.gz"
+          uv run --locked python tools/check_release.py --source-only "$RUNNER_TEMP/source.tar.gz"

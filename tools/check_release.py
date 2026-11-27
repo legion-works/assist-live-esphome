@@ -6,14 +6,25 @@ import re
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
+from typing import IO
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CMAKE_VERSION = "3.30.2"
 COMPILED_SUFFIXES = {".bin", ".elf", ".map", ".uf2", ".img", ".hex"}
+# Archive members go to a temporary file in chunks, not into memory.
+CHUNK_BYTES = 1 << 16
+# The limit stops an expanded member before it fills the temporary disk.
+MEMBER_LIMIT_BYTES = 1 << 30
+# One release file, with its nested archives, has these totals.
+ARCHIVE_LIMIT_BYTES = 1 << 32
+ARCHIVE_ENTRY_LIMIT = 10_000
+# The merged-image check reads the partition table, which ends at 0x9000.
+PREFIX_BYTES = 0x9000
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 WARNING_LEVEL = re.compile(
     r"^\s*(?:(?:\[[0-9TZ:.,+ -]+\]|[0-9TZ:.,+ -]+)\s*)?(WARNING\b.*)$"
@@ -245,7 +256,8 @@ def esp_image_header(data: bytes, offset: int = 0) -> bool:
     )
 
 
-def merged_esp_image(data: bytes) -> bool:
+def merged_esp_image(data: bytes, stream: IO[bytes] | None = None) -> bool:
+    """Find a factory image. With a stream, data is only the file prefix."""
     if not esp_image_header(data, 0x1000):
         return False
     # ESP32-S3 factory images contain a partition table and an app partition.
@@ -254,11 +266,14 @@ def merged_esp_image(data: bytes) -> bool:
         if entry[:2] != b"\xaa\x50":
             break
         app_offset = int.from_bytes(entry[4:8], "little")
-        if (
-            entry[2] == 0
-            and app_offset >= 0x10000
-            and esp_image_header(data, app_offset)
-        ):
+        if entry[2] != 0 or app_offset < 0x10000:
+            continue
+        if stream is None:
+            header = data[app_offset : app_offset + 24]
+        else:
+            stream.seek(app_offset)
+            header = stream.read(24)
+        if esp_image_header(header):
             return True
     return False
 
@@ -285,21 +300,78 @@ def compiler_warning_is_baselined(line: str) -> bool:
     return False
 
 
-def check_content(name: str, data: bytes, depth: int = 0) -> list[str]:
+class ArchiveBudgetError(Exception):
+    pass
+
+
+class ArchiveBudget:
+    """Count the entries and the expanded bytes of one release file.
+
+    Nested archives use the budget of the release file that contains them.
+    """
+
+    def __init__(self) -> None:
+        self.entries = ARCHIVE_ENTRY_LIMIT
+        self.bytes = ARCHIVE_LIMIT_BYTES
+
+    def entry(self) -> None:
+        self.entries -= 1
+        if self.entries < 0:
+            raise ArchiveBudgetError("archive entry limit")
+
+    def expand(self, size: int) -> None:
+        self.bytes -= size
+        if self.bytes < 0:
+            raise ArchiveBudgetError("archive expansion limit")
+
+
+def check_member(
+    name: str, source: IO[bytes], declared: int, depth: int, budget: ArchiveBudget
+) -> list[str]:
+    if declared > MEMBER_LIMIT_BYTES:
+        return [f"{name}: archive member size limit"]
+    if declared > budget.bytes:
+        raise ArchiveBudgetError("archive expansion limit")
+    with tempfile.TemporaryFile() as spool:
+        size = 0
+        while chunk := source.read(CHUNK_BYTES):
+            size += len(chunk)
+            if size > MEMBER_LIMIT_BYTES:
+                return [f"{name}: archive member size limit"]
+            budget.expand(len(chunk))
+            spool.write(chunk)
+        return check_content(name, spool, depth, budget)
+
+
+def check_content(
+    name: str,
+    data: bytes | IO[bytes],
+    depth: int = 0,
+    budget: ArchiveBudget | None = None,
+) -> list[str]:
+    if budget is None:
+        try:
+            return check_content(name, data, depth, ArchiveBudget())
+        except ArchiveBudgetError as error:
+            return [f"{name}: {error}"]
+    stream = io.BytesIO(data) if isinstance(data, bytes) else data
     failures = []
     if Path(name).suffix.lower() in COMPILED_SUFFIXES:
         failures.append(f"{name}: compiled artifact suffix")
+    stream.seek(0)
+    prefix = stream.read(PREFIX_BYTES)
     if (
-        data.startswith((b"\x7fELF", b"UF2\n"))
-        or esp_image_header(data)
-        or merged_esp_image(data)
+        prefix.startswith((b"\x7fELF", b"UF2\n"))
+        or esp_image_header(prefix)
+        or merged_esp_image(prefix, stream)
     ):
         failures.append(f"{name}: compiled image magic")
-    stream = io.BytesIO(data)
     # Python 3.12 zipfile.is_zipfile does not restore the stream position.
-    # Each probe gets its own stream, so tarfile.is_tarfile reads from offset 0.
-    is_zip = zipfile.is_zipfile(io.BytesIO(data))
-    is_tar = tarfile.is_tarfile(io.BytesIO(data))
+    # Each probe starts at offset 0.
+    stream.seek(0)
+    is_zip = zipfile.is_zipfile(stream)
+    stream.seek(0)
+    is_tar = tarfile.is_tarfile(stream)
     archive_suffix = name.lower().endswith((".zip", ".tar", ".tar.gz", ".tgz"))
     if not (is_zip or is_tar or archive_suffix):
         return failures
@@ -310,15 +382,22 @@ def check_content(name: str, data: bytes, depth: int = 0) -> list[str]:
         if is_zip:
             with zipfile.ZipFile(stream) as archive:
                 for item in archive.infolist():
+                    budget.entry()
                     if not item.is_dir():
-                        failures.extend(
-                            check_content(
-                                f"{name}!{item.filename}", archive.read(item), depth + 1
+                        with archive.open(item) as content:
+                            failures.extend(
+                                check_member(
+                                    f"{name}!{item.filename}",
+                                    content,
+                                    item.file_size,
+                                    depth + 1,
+                                    budget,
+                                )
                             )
-                        )
         else:
             with tarfile.open(fileobj=stream) as archive:
                 for member in archive:
+                    budget.entry()
                     if member.isdir():
                         continue
                     if not member.isfile():
@@ -326,11 +405,15 @@ def check_content(name: str, data: bytes, depth: int = 0) -> list[str]:
                             f"{name}!{member.name}: non-source archive entry"
                         )
                         continue
-                    content = archive.extractfile(member)
-                    if content is not None:
+                    extracted = archive.extractfile(member)
+                    if extracted is not None:
                         failures.extend(
-                            check_content(
-                                f"{name}!{member.name}", content.read(), depth + 1
+                            check_member(
+                                f"{name}!{member.name}",
+                                extracted,
+                                member.size,
+                                depth + 1,
+                                budget,
                             )
                         )
     except (OSError, tarfile.TarError, zipfile.BadZipFile, RuntimeError) as error:
@@ -342,7 +425,8 @@ def check_release(paths: list[Path]) -> list[str]:
     failures = []
     for path in paths:
         try:
-            failures.extend(check_content(path.name, path.read_bytes()))
+            with path.open("rb") as stream:
+                failures.extend(check_content(path.name, stream))
         except OSError:
             failures.append(f"{path.name}: unreadable source file")
     return failures

@@ -2349,3 +2349,44 @@ These checks ran in the complete `task check` before the push.
 The `pytest` run gave `273 passed` on Python 3.12 and on Python 3.14.
 This count includes the 4 code-generation tests.
 The four compile targets and the two configuration targets gave `new_warnings=0`.
+
+## Probe and release tool repairs (2026-11-27)
+
+An audit and a security review found problems in the probe tool and the release checks.
+This record gives the safeguards and the test results.
+
+The probe refuses a report path if the report or its `.events.jsonl` file is an input or a trial record.
+The inputs are the secrets file and the sample file. The trial records are the packet log and the salt.
+The probe compares paths, and it also compares the device and inode numbers of the files.
+Thus a second name for one of these files gets the same refusal.
+
+The first check occurs before the probe reads or makes a file.
+The names of the trial records contain the run identifier, which is in the secrets file.
+Thus the first check refuses each `q1-<32 hex>.jsonl` and `q1-<32 hex>.salt` name in the secrets directory.
+The probe opens each report file without truncation and compares it with the inputs and the trial records again.
+It truncates and writes the file only after that check.
+
+If the probe cannot parse the secrets file, the error gives only the file and the line number.
+This rule applies to each error from the parser and from the value constructors.
+The new error does not include the first error, and the probe writes no traceback.
+An incorrect `assist_live_server` value gives an error without the value.
+
+The two release workflows run `check_release.py` with `uv run --locked`.
+The locked environment supplies PyYAML.
+
+CI downloads the public-tree checker from a pinned commit.
+CI compares the SHA-256 digest of the file with a pinned value before it runs the file.
+
+The source-only check copies each archive member to a temporary file in 64 KiB parts.
+A member that is larger than 1 GiB gives the refusal `archive member size limit`.
+One release file and its nested archives have a total limit of 4 GiB and 10,000 entries.
+The refusals are `archive expansion limit` and `archive entry limit`.
+The check stops the release file at the first total refusal.
+
+The new tests gave failures on the previous code and are satisfactory on the new code.
+Scratch mutations of each safeguard gave test failures.
+
+Result: `ruff format --check`, `ruff check`, `actionlint`, and `mypy` exited 0.
+`pytest` gave `309 passed` on Python 3.14 and on Python 3.12.
+The event vectors, the bootstrap check, the source-only check, and the two Gitleaks checks were satisfactory.
+ESPHome configuration checks and compiles did not run. Run `task config`, `task compile`, `task compile-pre-roll`, and `task compile-probe` before a release.
