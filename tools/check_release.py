@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import argparse
+import bz2
 import io
 import json
+import lzma
 import re
 import shutil
 import struct
@@ -9,8 +11,10 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+import zlib
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, cast
 
 import yaml
 
@@ -27,6 +31,26 @@ ARCHIVE_ENTRY_LIMIT = 10_000
 # Archive headers (ZIP central directory, TAR headers) are read before the
 # members. This limit stops them before they fill memory.
 ARCHIVE_METADATA_LIMIT_BYTES = 1 << 26
+# A compressed stream can give no output for much input. This limit counts the
+# bytes that the archive check reads from the file, before decompression. The
+# check reads a tar archive two times, and the format probes read each member
+# again. The check of a release archive of this repository reads less than
+# 8 MiB. The limit has a large margin, and it keeps the decoder work small.
+ARCHIVE_INPUT_LIMIT_BYTES = 1 << 28
+# The Python decoders use Python code for each compressed stream and for each
+# gzip padding byte. They also use it for each byte of a gzip name or comment.
+# A release archive has one stream, short fields, and no padding.
+COMPRESSED_STREAM_LIMIT = 16
+GZIP_FIELD_LIMIT_BYTES = 1 << 10
+GZIP_PADDING_LIMIT_BYTES = 1 << 12
+# tarfile parses a pax or GNU name payload fully before it gives the member.
+# The size of a release archive payload is less than this limit.
+TAR_EXTENSION_LIMIT_BYTES = 1 << 14
+XZ_MAGIC = b"\xfd7zXZ\x00"
+# tarfile copies the global pax records into each member that follows them.
+# Each copy of a record counts as metadata. A copy of a short record also uses
+# memory for one dictionary entry, thus each record also counts this value.
+TAR_PAX_RECORD_BYTES = 64
 # A tar member has a small number of extended headers. A zip entry has a
 # small number of `extra` fields. Python uses recursion for tar extended
 # headers. For `extra` fields, its work increases as the square of the count.
@@ -323,6 +347,7 @@ class ArchiveBudget:
         self.entries = ARCHIVE_ENTRY_LIMIT
         self.bytes = ARCHIVE_LIMIT_BYTES
         self.metadata = ARCHIVE_METADATA_LIMIT_BYTES
+        self.input = ARCHIVE_INPUT_LIMIT_BYTES
 
     def entry(self) -> None:
         self.entries -= 1
@@ -343,6 +368,48 @@ class ArchiveBudget:
         self.metadata -= size
         if self.metadata < 0:
             raise ArchiveBudgetError("archive metadata limit")
+
+    def read_input(self, size: int) -> None:
+        self.input -= size
+        if self.input < 0:
+            raise ArchiveBudgetError("archive input limit")
+
+
+class InputReader:
+    """Count the bytes that the archive readers read from the file.
+
+    The count is before decompression.
+
+    The decompressors read in parts. Thus the count can be more than the
+    limit by one part.
+    """
+
+    def __init__(self, raw: IO[bytes], budget: ArchiveBudget) -> None:
+        self.raw = raw
+        self.budget = budget
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            raise ArchiveBudgetError("archive input limit")
+        data = self.raw.read(size)
+        self.budget.read_input(len(data))
+        return data
+
+    def write(self, data: bytes) -> object:
+        raise OSError("read-only archive")
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.raw.tell()
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self.raw.seek(offset, whence)
+
+    def close(self) -> None:
+        # The caller owns the file and reads it again after the tar check.
+        pass
 
 
 class MetadataReader:
@@ -370,6 +437,7 @@ class MetadataReader:
         self.physical = 0
         self.headers = 0
         self.counting = True
+        self.payload = False
 
     def advance(self, size: int) -> None:
         if self.physical + size > self.physical_limit:
@@ -380,15 +448,16 @@ class MetadataReader:
         if size < 0:
             raise ArchiveBudgetError("archive metadata limit")
         self.advance(size)
+        payload, self.payload = self.payload, False
         if not self.counting:
             return self.raw.read(size)
         if self.used + size > self.limit:
             raise ArchiveBudgetError("archive metadata limit")
         data = self.raw.read(size)
         self.used += len(data)
-        # 512 bytes with the value 0 end the archive. Each other read of this size
-        # gets a header, an extended header, or a part of a sparse map.
-        if size == tarfile.BLOCKSIZE and data.strip(b"\0"):
+        # 512 bytes with the value 0 end the archive. Each other read of this size,
+        # other than an extension payload, gets a header or a part of a sparse map.
+        if not payload and size == tarfile.BLOCKSIZE and data.strip(b"\0"):
             self.headers += 1
             if self.headers > TAR_HEADER_CHAIN_LIMIT:
                 raise ArchiveBudgetError("archive header limit")
@@ -416,7 +485,45 @@ class MetadataReader:
         return self.raw.close()
 
 
+def pax_cost(records: Mapping[str, str] | None) -> int:
+    return sum(
+        TAR_PAX_RECORD_BYTES + len(keyword) + len(value)
+        for keyword, value in (records or {}).items()
+    )
+
+
+class MetadataTarInfo(tarfile.TarInfo):
+    """Examine an extension header before tarfile reads its payload.
+
+    tarfile parsed the size field of the 512-byte header block before it calls
+    these methods. The size check occurs on each open, also on the format
+    probe. tarfile reads the payload with one call. A payload of 512 bytes is
+    not a header, thus it does not count as one.
+    """
+
+    def extension(self, archive: tarfile.TarFile) -> MetadataReader:
+        if not 0 <= self.size <= TAR_EXTENSION_LIMIT_BYTES:
+            raise ArchiveBudgetError("archive metadata limit")
+        reader = cast(MetadataReader, archive.fileobj)
+        reader.payload = True
+        return reader
+
+    def _proc_gnulong(self, archive: tarfile.TarFile) -> tarfile.TarInfo:
+        self.extension(archive)
+        return super()._proc_gnulong(archive)  # type: ignore[misc]
+
+    def _proc_pax(self, archive: tarfile.TarFile) -> tarfile.TarInfo:
+        reader = self.extension(archive)
+        if reader.budget is not None:
+            # A local header makes a copy of the global records before it
+            # parses its own records. The member does not keep this copy, thus
+            # the copy counts here.
+            reader.budget.read_metadata(pax_cost(archive.pax_headers))
+        return super()._proc_pax(archive)  # type: ignore[misc]
+
+
 class MetadataTarFile(tarfile.TarFile):
+    tarinfo = MetadataTarInfo
     metadata_limit = 0
     physical_limit = 0
     entry_budget: ArchiveBudget | None = None
@@ -433,20 +540,36 @@ class MetadataTarFile(tarfile.TarFile):
         archive.reader = reader
         return archive
 
+    @classmethod
+    def xzopen(cls, name, mode="r", fileobj=None, preset=None, **kwargs: Any):
+        # LZMA "alone" data has no magic number. Thus the decoder reads each
+        # 18 bytes with the value 0 as one empty stream. A release archive uses
+        # the xz format.
+        if fileobj is not None:
+            position = fileobj.tell()
+            magic = fileobj.read(len(XZ_MAGIC))
+            fileobj.seek(position)
+            if magic != XZ_MAGIC:
+                raise tarfile.ReadError("not an lzma file")
+        return super().xzopen(name, mode, fileobj, preset, **kwargs)
+
 
 def open_tar(
     stream: IO[bytes],
+    budget: ArchiveBudget,
     limit: int,
     physical_limit: int,
-    budget: ArchiveBudget | None = None,
+    count_entries: bool = False,
 ) -> MetadataTarFile:
     class LimitedTarFile(MetadataTarFile):
         metadata_limit = limit
-        entry_budget = budget
+        entry_budget = budget if count_entries else None
 
     LimitedTarFile.physical_limit = physical_limit
     stream.seek(0)
-    return LimitedTarFile.open(fileobj=stream, mode="r:*")
+    # The decompressors read from this reader. Thus the format probes and each
+    # read of the tar archive count against the input limit.
+    return LimitedTarFile.open(fileobj=InputReader(stream, budget), mode="r:*")
 
 
 def next_member(archive: MetadataTarFile) -> tarfile.TarInfo | None:
@@ -460,10 +583,162 @@ def next_member(archive: MetadataTarFile) -> tarfile.TarInfo | None:
 def is_tar(stream: IO[bytes], budget: ArchiveBudget) -> bool:
     """Do the tarfile.is_tarfile test with the header limits."""
     try:
-        with open_tar(stream, budget.metadata, budget.bytes):
+        with open_tar(stream, budget, budget.metadata, budget.bytes):
             return True
-    except tarfile.TarError:
+    except ARCHIVE_ERRORS:
         return False
+
+
+def decoders() -> list[tuple[Callable[[], Any], tuple[type[Exception], ...]]]:
+    """Give the multi-stream decoders that tarfile.open tries with "r:*"."""
+    found: list[tuple[Callable[[], Any], tuple[type[Exception], ...]]] = [
+        (bz2.BZ2Decompressor, (OSError, EOFError, ValueError)),
+        (lzma.LZMADecompressor, (lzma.LZMAError, EOFError)),
+    ]
+    try:
+        from compression import zstd  # type: ignore[import-not-found]
+    except ImportError:
+        return found
+    found.append((zstd.ZstdDecompressor, (zstd.ZstdError, EOFError)))
+    return found
+
+
+# tarfile and zipfile give the decoder errors without a change.
+ARCHIVE_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    EOFError,
+    RuntimeError,
+    tarfile.TarError,
+    zipfile.BadZipFile,
+    zlib.error,
+    *(error for _, errors in decoders() for error in errors),
+)
+
+
+def walk_streams(
+    source: InputReader,
+    factory: Callable[[], Any],
+    errors: tuple[type[Exception], ...],
+    budget: ArchiveBudget,
+) -> None:
+    """Count the streams of one format, as the Python decoder reads them.
+
+    The walk stops without a refusal at the first decoder error, because the
+    decoder also stops there.
+    """
+    source.seek(0)
+    data = b""
+    streams = 0
+    output = 0
+    while data or (data := source.read(CHUNK_BYTES)):
+        streams += 1
+        if streams > COMPRESSED_STREAM_LIMIT:
+            raise ArchiveBudgetError("archive compression limit")
+        decompressor = factory()
+        try:
+            while not decompressor.eof:
+                if not data and decompressor.needs_input:
+                    if not (data := source.read(CHUNK_BYTES)):
+                        return
+                output += len(decompressor.decompress(data, CHUNK_BYTES))
+                data = b""
+                if output > budget.bytes:
+                    raise ArchiveBudgetError("archive expansion limit")
+        except errors:
+            return
+        data = decompressor.unused_data
+
+
+def walk_gzip(source: InputReader, budget: ArchiveBudget) -> None:
+    """Count the gzip members, header fields, and padding before gzip reads them.
+
+    The walk stops without a refusal where the data is not correct gzip data,
+    because the gzip reader also stops there.
+    """
+    source.seek(0)
+    data = b""
+    eof = False
+
+    def fill(size: int) -> bool:
+        nonlocal data, eof
+        while len(data) < size and not eof:
+            chunk = source.read(CHUNK_BYTES)
+            eof = not chunk
+            data += chunk
+        return len(data) >= size
+
+    members = 0
+    padding = 0
+    output = 0
+    while True:
+        while fill(1) and not data[0]:
+            stripped = data.lstrip(b"\0")
+            padding += len(data) - len(stripped)
+            data = stripped
+            if padding > GZIP_PADDING_LIMIT_BYTES:
+                raise ArchiveBudgetError("archive compression limit")
+        if not data:
+            return
+        members += 1
+        if members > COMPRESSED_STREAM_LIMIT:
+            raise ArchiveBudgetError("archive compression limit")
+        if not fill(10) or data[:3] != b"\x1f\x8b\x08":
+            return
+        flags = data[3]
+        position = 10
+        if flags & 4:
+            if not fill(position + 2):
+                return
+            size = int.from_bytes(data[position : position + 2], "little")
+            if size > GZIP_FIELD_LIMIT_BYTES:
+                raise ArchiveBudgetError("archive compression limit")
+            position += 2 + size
+        for flag in (8, 16):
+            if flags & flag:
+                fill(position + GZIP_FIELD_LIMIT_BYTES + 1)
+                end = data.find(b"\0", position, position + GZIP_FIELD_LIMIT_BYTES + 1)
+                if end < 0:
+                    if len(data) > position + GZIP_FIELD_LIMIT_BYTES:
+                        raise ArchiveBudgetError("archive compression limit")
+                    return
+                position = end + 1
+        if flags & 2:
+            position += 2
+        if not fill(position):
+            return
+        data = data[position:]
+        decompressor = zlib.decompressobj(-zlib.MAX_WBITS)
+        try:
+            while not decompressor.eof:
+                if not data and not fill(1):
+                    return
+                output += len(decompressor.decompress(data, CHUNK_BYTES))
+                data = decompressor.unconsumed_tail
+                if output > budget.bytes:
+                    raise ArchiveBudgetError("archive expansion limit")
+        except zlib.error:
+            return
+        data = decompressor.unused_data
+        if not fill(8):
+            return
+        data = data[8:]
+
+
+def check_compressed(stream: IO[bytes], budget: ArchiveBudget) -> None:
+    """Walk the compressed streams of a file before tarfile decompresses it.
+
+    tarfile.open tries each decoder on each file. Thus the walk occurs for each
+    format that the decoder accepts at the start of the file.
+    """
+    source = InputReader(stream, budget)
+    source.seek(0)
+    magic = source.read(len(XZ_MAGIC))
+    if magic.startswith(b"\x1f\x8b"):
+        walk_gzip(source, budget)
+    for factory, errors in decoders():
+        # The tar check opens LZMA data only if it has the xz magic number.
+        if factory is not lzma.LZMADecompressor or magic == XZ_MAGIC:
+            walk_streams(source, factory, errors, budget)
 
 
 def zip_declared_size(size: int, extra: bytes) -> int:
@@ -538,13 +813,17 @@ def count_tar_headers(stream: IO[bytes], budget: ArchiveBudget) -> tuple[int, in
     member size counts, for all member types. Give the header limit and the
     stream limit for the second read.
     """
-    with open_tar(stream, budget.metadata, budget.bytes, budget) as archive:
+    with open_tar(stream, budget, budget.metadata, budget.bytes, True) as archive:
         declared = 0
         entries = 0
         while (member := next_member(archive)) is not None:
             entries += 1
             declared += member.size
             budget.declare(declared)
+            # The member has a copy of all global records and of its own
+            # records. The count occurs after each copy. Thus the copies stop
+            # at the metadata limit.
+            budget.read_metadata(pax_cost(member.pax_headers))
         budget.read_metadata(archive.reader.used)
         # Before each header, tarfile can read one byte to find the end of
         # the member data. The stream position controls that read.
@@ -598,6 +877,8 @@ def check_content(
     # Python 3.12 zipfile.is_zipfile does not restore the stream position.
     # Each probe starts at offset 0.
     stream.seek(0)
+    check_compressed(stream, budget)
+    stream.seek(0)
     is_zip = zipfile.is_zipfile(stream)
     tar = is_tar(stream, budget)
     archive_suffix = name.lower().endswith((".zip", ".tar", ".tar.gz", ".tgz"))
@@ -616,7 +897,7 @@ def check_content(
         try:
             stream.seek(0)
             failures.extend(scan(name, stream, depth, budget))
-        except (OSError, tarfile.TarError, zipfile.BadZipFile, RuntimeError) as error:
+        except ARCHIVE_ERRORS as error:
             failures.append(f"{name}: unreadable archive ({type(error).__name__})")
     return failures
 
@@ -627,7 +908,8 @@ def check_zip(
     count_zip_headers(stream, budget)
     failures = []
     stream.seek(0)
-    with zipfile.ZipFile(stream) as archive:
+    # Each read of a member counts, also a second read of the same data.
+    with zipfile.ZipFile(InputReader(stream, budget)) as archive:
         for item in archive.infolist():
             if not item.is_dir():
                 with archive.open(item) as content:
@@ -650,7 +932,7 @@ def check_tar(
     failures = []
     # This second read gets the same bytes. The budget has these bytes from
     # the first read. Thus the limits come from the first read.
-    with open_tar(stream, header_limit, physical_limit) as archive:
+    with open_tar(stream, budget, header_limit, physical_limit) as archive:
         while (member := next_member(archive)) is not None:
             if member.isdir():
                 pass

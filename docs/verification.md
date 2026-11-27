@@ -2434,3 +2434,42 @@ Result: `ruff format --check`, `ruff check`, `actionlint`, and `mypy` exited 0.
 `pytest` gave `324 passed` on Python 3.14 and on Python 3.12.
 The event vectors, the bootstrap check, the source-only check, the two Gitleaks checks, and the public-tree check were satisfactory.
 ESPHome configuration checks and compiles did not run. Run `task config`, `task compile`, `task compile-pre-roll`, and `task compile-probe` before a release.
+
+## Release check: compressed input and extended tar records (2026-11-27)
+
+The archive check counts each byte that the tar decoder and the zip member reader read from the file, before decompression.
+This count includes the format probes, the two reads of a tar archive, the compressed data of each zip member, and the nested archives.
+It does not include each read of the zip directory before the member reads.
+One release file has a limit of 256 MiB for this count. The refusal is `archive input limit`.
+The check of a release archive of this repository reads less than 8 MiB.
+
+Before the tar check opens a compressed file, the check examines the compressed streams.
+A file with more than 16 streams gives the refusal `archive compression limit`.
+A gzip name, comment, or `extra` field that is longer than 1 KiB gives the same refusal.
+More than 4 KiB of padding bytes with the value 0 between or after gzip members also gives this refusal.
+The tar check opens LZMA data only if the data starts with the xz magic number.
+Thus a file of bytes with the value 0 is not decoded as many empty LZMA streams.
+
+The check examines the size of each pax or GNU name header before `tarfile` reads the payload.
+A payload that is larger than 16 KiB gives the refusal `archive metadata limit`.
+This check occurs on each open of the archive, also on the format probe.
+
+`tarfile` copies the global pax records into each member that follows them.
+It also copies them for each local pax header.
+The check counts each of these copies as metadata, with 64 bytes more for each record.
+The refusal is `archive metadata limit`.
+The global record of a `git archive` tar output is small, and it does not cause a refusal.
+
+A pax or GNU name payload of 512 bytes does not count as a header.
+Each header counts as an entry, also an extended header.
+
+The check examined the `git archive` outputs of this repository in the tar, tar.gz, and zip formats.
+It also examined the tar output with bz2 and xz compression.
+The previous code and the new code gave no findings.
+
+The new tests gave failures on the previous code and are satisfactory on the new code.
+A scratch mutation of each safeguard gave test failures.
+We measured the stream and extended-header refusals of the tests with the default limits.
+Each of these refusals occurred in less than 0.1 seconds.
+The peak of the Python memory allocations that `tracemalloc` recorded for each of these refusals was less than 1 MiB.
+This value is not the memory of the process.

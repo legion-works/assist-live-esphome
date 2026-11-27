@@ -433,6 +433,261 @@ def test_tar_extension_header_chain_is_bounded(tmp_path: Path) -> None:
     assert check_release([archive]) == [f"{archive.name}: archive header limit"]
 
 
+@pytest.mark.parametrize("tar_format", [tarfile.PAX_FORMAT, tarfile.GNU_FORMAT])
+@pytest.mark.parametrize("name_size", [150, 600])
+def test_tar_extension_payload_is_not_a_header(
+    tmp_path: Path, monkeypatch, tar_format: int, name_size: int
+) -> None:
+    from tools import check_release
+
+    # The long name gives an extension payload of 512 bytes or of 1,024 bytes.
+    archive = tmp_path / "source.tar"
+    with tarfile.open(archive, "w", format=tar_format) as target:
+        target.addfile(tarfile.TarInfo("source/" + "a" * name_size), io.BytesIO())
+    # The member has an extension header and a ustar header.
+    monkeypatch.setattr(check_release, "ARCHIVE_ENTRY_LIMIT", 2)
+    assert check_release.check_release([archive]) == []
+    monkeypatch.setattr(check_release, "ARCHIVE_ENTRY_LIMIT", 1)
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}: archive entry limit"
+    ]
+
+
+def test_tar_global_records_count_for_each_member(tmp_path: Path, monkeypatch) -> None:
+    from tools import check_release
+
+    def write(path: Path, records: dict[str, str]) -> Path:
+        with tarfile.open(
+            path, "w", format=tarfile.PAX_FORMAT, pax_headers=records
+        ) as target:
+            for index in range(200):
+                target.addfile(tarfile.TarInfo(f"source/{index}"), io.BytesIO())
+        return path
+
+    monkeypatch.setattr(check_release, "ARCHIVE_METADATA_LIMIT_BYTES", 4 << 20)
+    # git archive writes one global record with the commit.
+    small = write(tmp_path / "small.tar", {"comment": "0" * 40})
+    assert check_release.check_release([small]) == []
+    # The global records are small, but tarfile copies them into each member.
+    large = write(tmp_path / "large.tar", {f"k{i}": "" for i in range(1200)})
+    assert large.stat().st_size < 1 << 20
+    assert check_release.check_release([large]) == [
+        f"{large.name}: archive metadata limit"
+    ]
+
+
+def test_compressed_tar_input_is_counted_before_decompression(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import gzip
+
+    from tools import check_release
+
+    # The gzip member has only empty deflate parts. Thus the file
+    # decompresses to no bytes.
+    archive = tmp_path / "source.tar.gz"
+    archive.write_bytes(empty_gzip(250_000))
+    assert gzip.decompress(archive.read_bytes()) == b""
+    assert archive.stat().st_size > 1 << 20
+    monkeypatch.setattr(
+        check_release, "ARCHIVE_INPUT_LIMIT_BYTES", 1 << 18, raising=False
+    )
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}: archive input limit"
+    ]
+
+
+def empty_gzip(blocks: int, flags: int = 0, field: bytes = b"") -> bytes:
+    empty_block = b"\x00\x00\x00\xff\xff"
+    last_block = b"\x01\x00\x00\xff\xff"
+    header = b"\x1f\x8b\x08" + bytes([flags]) + b"\0" * 4 + b"\x00\xff" + field
+    return header + empty_block * blocks + last_block + b"\0" * 8
+
+
+def compressed_tar() -> bytes:
+    target = io.BytesIO()
+    with tarfile.open(fileobj=target, mode="w") as archive:
+        info = tarfile.TarInfo("source/notes.txt")
+        info.size = 5
+        archive.addfile(info, io.BytesIO(b"notes"))
+    return target.getvalue()
+
+
+def framing(kind: str) -> bytes:
+    import bz2
+    import gzip
+    import lzma
+
+    tar = compressed_tar()
+    if kind == "gzip-padding":
+        return gzip.compress(tar, mtime=0) + b"\0" * (1 << 20)
+    if kind == "gzip-name":
+        return empty_gzip(1, 8, b"a" * 2048 + b"\0")
+    if kind == "gzip-comment":
+        return empty_gzip(1, 16, b"a" * (1 << 20) + b"\0")
+    if kind == "gzip-extra":
+        return empty_gzip(1, 4, struct.pack("<H", 2048) + b"a" * 2048)
+    if kind == "gzip-members":
+        return gzip.compress(tar, mtime=0) + gzip.compress(b"", mtime=0) * 16
+    if kind == "bz2-streams":
+        return bz2.compress(tar) + bz2.compress(b"") * 16
+    return lzma.compress(tar) + lzma.compress(b"") * 16
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "gzip-padding",
+        "gzip-name",
+        "gzip-comment",
+        "gzip-extra",
+        "gzip-members",
+        "bz2-streams",
+        "xz-streams",
+    ],
+)
+def test_compressed_framing_is_bounded_with_default_limits(
+    tmp_path: Path, monkeypatch, kind: str
+) -> None:
+    from tools import check_release
+
+    archive = tmp_path / "source.tar.gz"
+    archive.write_bytes(framing(kind))
+    reads = []
+    original = check_release.InputReader.read
+
+    def count(self, size: int = -1) -> bytes:
+        reads.append(size)
+        return original(self, size)
+
+    monkeypatch.setattr(check_release.InputReader, "read", count)
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}: archive compression limit"
+    ]
+    # The refusal occurs before the decoder reads the file one byte at a time.
+    assert len(reads) < 100
+
+
+def test_compressed_framing_of_valid_archives_passes(tmp_path: Path) -> None:
+    import bz2
+    import gzip
+    import lzma
+
+    from tools.check_release import check_release
+
+    tar = compressed_tar()
+    half = len(tar) // 2
+    for name, data in (
+        ("two.tar.gz", gzip.compress(tar[:half]) + gzip.compress(tar[half:])),
+        ("padded.tar.gz", gzip.compress(tar) + b"\0" * 512),
+        ("two.tar.bz2", bz2.compress(tar[:half]) + bz2.compress(tar[half:])),
+        ("two.tar.xz", lzma.compress(tar[:half]) + lzma.compress(tar[half:])),
+    ):
+        archive = tmp_path / name
+        archive.write_bytes(data)
+        assert check_release([archive]) == [], name
+
+
+def test_zero_filled_file_is_not_decoded_as_lzma(tmp_path: Path, monkeypatch) -> None:
+    import lzma
+
+    from tools.check_release import check_release
+
+    created = []
+    original = lzma.LZMADecompressor
+
+    def factory(*args, **kwargs):
+        created.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(lzma, "LZMADecompressor", factory)
+    blank = tmp_path / "blank.dat"
+    blank.write_bytes(b"\0" * (1 << 20))
+    assert check_release([blank]) == []
+    assert len(created) <= 1
+
+
+def pax_payload(size: int) -> bytes:
+    records = []
+    total = 0
+    index = 0
+    while total < size:
+        record = b" k%x=\n" % index
+        length = len(record) + len(str(len(record) + 2))
+        records.append(b"%d" % length + record)
+        total += length
+        index += 1
+    return b"".join(records)
+
+
+@pytest.mark.parametrize(
+    "kind", [tarfile.XGLTYPE, tarfile.XHDTYPE, tarfile.GNUTYPE_LONGNAME]
+)
+@pytest.mark.parametrize("name", ["source.tar", "notes.dat"])
+def test_tar_extension_payload_size_is_checked_before_parsing(
+    tmp_path: Path, kind: bytes, name: str
+) -> None:
+    import tracemalloc
+
+    from tools.check_release import check_release
+
+    # The second name has no archive suffix. Thus only the format probe opens it.
+    payload = (
+        b"a" * (1 << 20) if kind == tarfile.GNUTYPE_LONGNAME else pax_payload(1 << 20)
+    )
+    archive = tmp_path / name
+    archive.write_bytes(
+        tar_header("pax", kind, len(payload))
+        + payload
+        + b"\0" * (-len(payload) % 512)
+        + tar_header("source/notes.txt", tarfile.REGTYPE, 0)
+        + b"\0" * 1024
+    )
+    tracemalloc.start()
+    try:
+        failures = check_release([archive])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert failures == [f"{name}: archive metadata limit"]
+    assert peak < 4 << 20
+
+
+def test_tar_local_records_count_the_global_copy(tmp_path: Path, monkeypatch) -> None:
+    from tools import check_release
+
+    archive = tmp_path / "source.tar"
+    with tarfile.open(
+        archive,
+        "w",
+        format=tarfile.PAX_FORMAT,
+        pax_headers={f"k{i}": "" for i in range(1200)},
+    ) as target:
+        for index in range(50):
+            # The long name gives each member a local pax header.
+            member = tarfile.TarInfo(f"source/{index}-" + "a" * 150)
+            target.addfile(member, io.BytesIO())
+    monkeypatch.setattr(check_release, "ARCHIVE_METADATA_LIMIT_BYTES", 6 << 20)
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}: archive metadata limit"
+    ]
+
+
+def test_zip_member_reads_count_as_input(tmp_path: Path, monkeypatch) -> None:
+    from tools import check_release
+
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as target:
+        target.writestr("source/notes.txt", b"a" * (4 << 20))
+    # The format probes of the member read less than 2 MiB.
+    monkeypatch.setattr(
+        check_release, "ARCHIVE_INPUT_LIMIT_BYTES", 3 << 20, raising=False
+    )
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}: archive input limit"
+    ]
+
+
 def test_zip_extra_field_count_is_bounded(tmp_path: Path) -> None:
     from tools.check_release import check_release
 
