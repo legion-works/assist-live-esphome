@@ -2473,3 +2473,21 @@ We measured the stream and extended-header refusals of the tests with the defaul
 Each of these refusals occurred in less than 0.1 seconds.
 The peak of the Python memory allocations that `tracemalloc` recorded for each of these refusals was less than 1 MiB.
 This value is not the memory of the process.
+
+## Release check record correction: zip reads and test counts (2026-11-27)
+
+This record corrects the record "Release check: compressed input and extended tar records" above.
+
+The input count includes all file reads of `zipfile.ZipFile`, because `ZipFile` reads through the counting reader.
+These reads include the end record and the central directory.
+They also include the local header and the compressed data of each member that the check opens.
+
+Before `ZipFile` opens the file, two steps read the file directly: the format probe and a walk of the central directory.
+The probe `zipfile.is_zipfile` reads the end record.
+The walk reads the end record and then the central directory entries one at a time.
+These earlier reads do not go through the counting reader, so the input count does not include them.
+The central directory size counts against the metadata limit before the entry walk.
+
+The counts for the tests are from two different selections.
+On the previous code, the selection of new tests gave `15 failed, 7 passed`.
+On the new code, the complete `tests/test_release.py` file gave `118 passed` with CPython 3.14 and with CPython 3.12.
