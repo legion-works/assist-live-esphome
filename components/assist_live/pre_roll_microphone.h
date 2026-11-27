@@ -10,6 +10,7 @@
 #include "diagnostic_state.h"
 #endif
 #include <memory>
+#include <optional>
 
 namespace esphome::assist_live {
 class AssistLiveComponent;
@@ -70,10 +71,11 @@ protected:
   size_t capacity_{0}, reported_overflows_{0};
   unsigned listeners_{0};
   uint64_t arm_ms_{0}, arm_to_start_ms_{0};
+  std::optional<uint64_t> replay_gate_ms_;
   uint32_t last_pre_roll_ms_{0}, passthrough_starts_{0};
   bool arm_pending_{false}, arm_expired_{false};
   bool reply_pending_{false};
-  bool turn_active_{false}, wake_bound_{false}, replay_started_{false};
+  bool turn_active_{false}, wake_bound_{false};
   bool privacy_mute_{false}, effective_mute_{false}, passthrough_{false};
 #ifdef USE_ASSIST_LIVE_DIAGNOSTICS
   DiagnosticState diagnostics_;

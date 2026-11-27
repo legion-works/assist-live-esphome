@@ -97,6 +97,12 @@ std::string scenario;
 void chime_wait() {
   now += 300;
   if (tick_lag) tick_lag = 73;
+  if (scenario.find("stop_during_chime") == 0 && std::count(events.begin(), events.end(), "chime") == 1) {
+    assert(reply_wake_pending && !va.running && !announcing);
+    if (scenario == "stop_during_chime_with_announcement") announcing = true;
+    if (scenario == "stop_during_chime_with_timer") timer_ringing.state = true;
+    detect("Stop");
+  }
   if (scenario == "timer_during_chime") timer_ringing.state = true;
   if (scenario == "announcement_during_chime") {
     announcing = true;
@@ -144,6 +150,7 @@ int main(int argc, char **argv) {
     assert(std::any_of(logs.begin(), logs.end(), [](const auto &line) { return line.find("idle wait expired") != std::string::npos; }));
   if (scenario == "pending_stop" || scenario == "pending_mute" || scenario == "pending_error")
     assert(!pre_roll_mic.captured && !reply_wake_pending);
+  if (scenario == "pending_stop") assert(va.stops == 2 && "Stop still stops a running assistant");
   if (scenario == "pending_error")
     assert(va.starts == 0 && "an error during the stop wait cancels the restart");
   if (scenario == "pending_timer") {
@@ -155,5 +162,12 @@ int main(int argc, char **argv) {
     assert(!pre_roll_mic.captured && !reply_wake_pending);
     assert(va.starts == 0 && "chime races must cancel the pending restart");
   }
+  if (scenario == "stop_during_chime")
+    assert(va.stops == 1 && std::count(events.begin(), events.end(), "chime") == 1 &&
+           "Stop cancels without starting a second chime");
+  if (scenario == "stop_during_chime_with_announcement")
+    assert(!announcing && "Stop still stops an announcement");
+  if (scenario == "stop_during_chime_with_timer")
+    assert(!timer_ringing.state && "Stop still stops a ringing timer");
   std::cout << "PASS " << scenario << '\n';
 }

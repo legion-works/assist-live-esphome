@@ -2,6 +2,7 @@
 #include "pre_roll_microphone.cpp"
 #include "esp_timer.h"
 #include <cassert>
+#include <cmath>
 #include <iostream>
 #include <atomic>
 #include <climits>
@@ -166,6 +167,11 @@ template<typename T> static void retained_source_lifecycle() {
       if (turn == 0) {
         mic.set_privacy_mute(true);
         assert(mic.pre_roll_ms() == 32 && "mute preserves history already sent this turn");
+        feed(4000);
+        assert(received_left.size() == 1024 && received_right.size() == 1024 &&
+               "the muted direct callback still supplies a full block to both channels");
+        for (int i = 768; i < 1024; ++i)
+          assert(received_left[i] == 0 && received_right[i] == 0 && "the muted block contains silence");
         mic.set_privacy_mute(false);
       }
       mic.finish_turn();
@@ -177,6 +183,8 @@ template<typename T> static void retained_source_lifecycle() {
       assert(history_sensor.states.size() == static_cast<size_t>(turn + 1) &&
              history_sensor.states.back() == 32 && "one fresh entity snapshot per completed turn");
       assert(gate_sensor.states.back() == (turn == 0 ? 20 : 21) && "replay gate entity has turn-local delay");
+      assert(passthrough_sensor.states.back() == (turn == 0) &&
+             "direct delivery of silence sets pass-through, but queue drain alone does not");
 #endif
       assert(mic.queued_frames() == 0 && "turn end discards residual queue");
       assert(mic.listeners() == 2 && "logical finish preserves stock source pairing");
@@ -185,8 +193,17 @@ template<typename T> static void retained_source_lifecycle() {
     assert(received_left.back() == 3255 * 64 && "inter-turn live frames have no queue delay");
     received_left.clear();
     received_right.clear();
-    parent.command_stream_start();
+#ifdef USE_ASSIST_LIVE_DIAGNOSTICS
+    va.running = true;
     mic.begin_turn();
+    mic.finish_turn();
+    publish();
+    assert(std::isnan(gate_sensor.states.back()) && "unarmed turn ended before the listening gate");
+#endif
+    parent.command_stream_start();
+    set_time(13000);
+    mic.begin_turn();
+    advance_time(11);
     mic.listening();
     assert(mic.pre_roll_ms() == 0 && "unarmed follow-up has no stale history");
     auto followup = parent.take();
@@ -198,6 +215,8 @@ template<typename T> static void retained_source_lifecycle() {
 #ifdef USE_ASSIST_LIVE_DIAGNOSTICS
     publish();
     assert(history_sensor.states.back() == 0 && "follow-up entity reports zero history");
+    assert(gate_sensor.states.back() == 0 && "an unarmed turn that reaches listening reports zero delay");
+    assert(passthrough_sensor.states.back() && "the direct microphone callback delivered live audio");
     const auto counter_updates = sent_sensor.states.size();
     publish();
     assert(sent_sensor.states.size() == counter_updates && "counter entities rate limit same-millisecond loops");

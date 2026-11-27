@@ -127,14 +127,14 @@ private:
       history_end_queue_ms_ = queue_delay_ms();
     if (count != historical && first_live_queue_ms_ < 0)
       first_live_queue_ms_ = queue_delay_ms();
-    if (pending() == 0)
-      passthrough_reached_ = true;
     next_ms_ = now + std::max<uint64_t>(1, (count * 1000 + 2 * rate_ - 1) / (2 * rate_));
     return count;
   }
 
 public:
   void account_passthrough(size_t frames) {
+    if (frames == 0)
+      return;
     live_sent_ += frames;
     handed_ += frames;
     if (first_live_queue_ms_ < 0)

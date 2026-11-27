@@ -39,7 +39,8 @@ static void ring_wrap_snapshot_and_splice() {
   assert(buffer.passthrough() && "catch-up reaches live pass-through");
   assert(buffer.history_end_queue_ms() == 20 && "history-end delay is captured at the splice");
   assert(buffer.first_live_queue_ms() == 20 && "first-live delay is captured at handoff");
-  assert(buffer.queue_delay_ms() == 0 && buffer.passthrough_reached());
+  assert(buffer.queue_delay_ms() == 0 && !buffer.passthrough_reached() &&
+         "an empty queue permits direct delivery but does not prove it");
 }
 
 static void eligibility_and_mute() {

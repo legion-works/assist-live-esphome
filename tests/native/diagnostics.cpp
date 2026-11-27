@@ -27,6 +27,13 @@ int main() {
   buffer.pop(110, true, output, 16);
   buffer.pop(118, true, output, 16);
   state.finish_turn(buffer, 10, false);
+  assert(state.take_turn(turn) && !turn.passthrough &&
+         "queue drain without a direct delivery is not pass-through");
+  buffer.account_passthrough(0);
+  state.finish_turn(buffer, 10, false);
+  assert(state.take_turn(turn) && !turn.passthrough && "an empty delivery is not pass-through");
+  buffer.account_passthrough(16);
+  state.finish_turn(buffer, 10, false);
   buffer.stop();
   buffer.start(200, true);
   assert(state.take_turn(turn) && "turn survives buffer clear and next start");
@@ -35,7 +42,7 @@ int main() {
   assert(turn.values[HISTORY_END_QUEUE_MS] == 16 && "history end queue snapshot");
   assert(turn.values[FIRST_LIVE_QUEUE_MS] == 0 && "first live queue snapshot");
   assert(turn.values[TURN_END_QUEUE_MS] == 0 && "turn end queue snapshot");
-  assert(turn.passthrough && "pass-through snapshot");
+  assert(turn.passthrough && "a direct delivery sets pass-through in the snapshot");
   assert(!state.take_turn(turn) && "one publication per completed turn");
   state.finish_turn(buffer, 33, true);
   assert(state.take_turn(turn));

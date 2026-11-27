@@ -22,12 +22,12 @@ struct TurnDiagnostics {
 class DiagnosticState {
 public:
   void finish_turn(const PreRollBuffer &buffer, uint64_t gate_delay, bool expired,
-                   bool replay_started = true) {
+                   bool gate_reached = true) {
     if (expired)
       ++expired_gates_;
     turn_.values = {
-        replay_started ? static_cast<float>(buffer.pre_roll_ms()) : 0.0f,
-        replay_started ? static_cast<float>(gate_delay) : NAN,
+        gate_reached ? static_cast<float>(buffer.pre_roll_ms()) : 0.0f,
+        gate_reached ? static_cast<float>(gate_delay) : NAN,
         static_cast<float>(buffer.trimmed_frames() / 16),
         static_cast<float>(buffer.overflows()),
         static_cast<float>(buffer.dropped_frames() / 16),

@@ -2491,3 +2491,25 @@ The central directory size counts against the metadata limit before the entry wa
 The counts for the tests are from two different selections.
 On the previous code, the selection of new tests gave `15 failed, 7 passed`.
 On the new code, the complete `tests/test_release.py` file gave `118 passed` with CPython 3.14 and with CPython 3.12.
+
+## Stop during a reply restart and turn diagnostics
+
+The resolved wake handler test sends `Stop` during the chime in `IDLE`.
+`Stop` cancels the pending restart without a new turn or a second chime.
+Other cases check that `Stop` stops the voice assistant, an announcement, or a ringing timer.
+The test compares the pending `Stop` branch with the stop steps from the pinned stock handler.
+The test identifies a change to the mute condition in the copied branch.
+
+The native microphone test ends an unarmed turn before the listening hook and checks that the replay gate is unknown.
+It then calls the hook in an unarmed turn and checks that `replay_gate_delay_ms` is 0.
+The native tests empty the replay queue without new audio input.
+The tests check that audio must bypass the queue to set `passthrough_reached`.
+The component continues to count the muted frames that it sends.
+
+At base `783dae5`, three selected tests gave unsatisfactory results.
+The handler started a new turn. The snapshot set `passthrough_reached` when the queue became empty.
+The microphone reported a replay gate before the listening hook.
+
+The tests found the two mutations at the same assertions.
+One change let `Stop` start a turn in `IDLE`. The other set `passthrough_reached` when the replay queue became empty.
+These checks use native C++ and resolved YAML. They do not use a device.

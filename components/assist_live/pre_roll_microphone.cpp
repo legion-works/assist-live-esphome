@@ -6,6 +6,7 @@
 #include "esphome/components/voice_assistant/voice_assistant.h"
 #include "esphome/core/log.h"
 #include <cinttypes>
+#include <cstdio>
 
 namespace esphome::assist_live {
 static const char *const TAG = "assist_live.pre_roll";
@@ -74,9 +75,9 @@ void PreRollMicrophone::receive_(const std::vector<uint8_t> &data) {
     push_frames_(data);
   if (listeners_ != 0 && !arm_pending_ && !wake_bound_ &&
       (idle || passthrough_ || effective_mute_)) {
+    deliver_(data);
     if (turn_active_)
       buffer_->account_passthrough(data.size() / sizeof(StereoFrame));
-    deliver_(data);
     return;
   }
   if (idle || (wake_bound_ && arm_expired_) || data.size() % sizeof(StereoFrame) != 0) {
@@ -163,7 +164,6 @@ void PreRollMicrophone::wake_started() {
     return;
   }
   turn_active_ = wake_bound_ = true;
-  replay_started_ = false;
   last_pre_roll_ms_ = 0;
   arm_to_start_ms_ = 0;
   reported_overflows_ = 0;
@@ -175,7 +175,7 @@ void PreRollMicrophone::begin_turn() {
   if (!buffer_ || turn_active_)
     return;
   update_mute_();
-  turn_active_ = replay_started_ = true;
+  turn_active_ = true;
   arm_pending_ = wake_bound_ = arm_expired_ = false;
   arm_to_start_ms_ = last_pre_roll_ms_ = 0;
   buffer_->start(AssistLiveComponent::monotonic_ms(), true);
@@ -197,18 +197,20 @@ void PreRollMicrophone::start() {
 void PreRollMicrophone::listening() {
   begin_turn();
   LockGuard lock(mutex_);
-  if (!buffer_ || listeners_ == 0 || !wake_bound_)
+  if (!turn_active_ || listeners_ == 0 || replay_gate_ms_)
+    return;
+  const uint64_t now = AssistLiveComponent::monotonic_ms();
+  replay_gate_ms_ = now;
+  ESP_LOGD(TAG, "Replay gate device_ms=%" PRIu64, now);
+  if (!wake_bound_)
     return;
   update_mute_();
-  const uint64_t now = AssistLiveComponent::monotonic_ms();
   arm_to_start_ms_ = now - arm_ms_;
   arm_expired_ = arm_expired_ || arm_to_start_ms_ > PreRollBuffer::MAX_ARM_TO_START_MS;
   buffer_->start(now, wake_sound_->state || arm_expired_);
   buffer_->listen();
   wake_bound_ = false;
-  replay_started_ = true;
   passthrough_ = arm_expired_ || effective_mute_ || wake_sound_->state;
-  ESP_LOGD(TAG, "Replay gate device_ms=%" PRIu64, now);
   if (buffer_->trimmed_frames() != 0)
     ESP_LOGD(TAG, "History trimmed_ms=%u (1000 ms total limit)",
              static_cast<unsigned>(buffer_->trimmed_frames() / 16));
@@ -264,9 +266,12 @@ void PreRollMicrophone::loop() {
 }
 
 void PreRollMicrophone::log_turn_() {
-  ESP_LOGD(TAG, "Turn wake_ms=%" PRIu64 " replay_gate_ms=%" PRIu64
+  char gate_ms[21] = "unknown";
+  if (replay_gate_ms_)
+    std::snprintf(gate_ms, sizeof(gate_ms), "%" PRIu64, *replay_gate_ms_);
+  ESP_LOGD(TAG, "Turn wake_ms=%" PRIu64 " replay_gate_ms=%s"
            " history_samples=%u live_samples=%u overflow_count=%u dropped_ms=%u trimmed_ms=%u",
-           buffer_->detection_ms(), buffer_->start_ms(),
+           buffer_->detection_ms(), gate_ms,
            static_cast<unsigned>(buffer_->history_sent()),
            static_cast<unsigned>(buffer_->live_sent()),
            static_cast<unsigned>(buffer_->overflows()),
@@ -303,13 +308,14 @@ void PreRollMicrophone::finish_turn() {
     LockGuard lock(mutex_);
     if (!buffer_ || !turn_active_)
       return;
-    last_pre_roll_ms_ = replay_started_ ? buffer_->pre_roll_ms() : 0;
+    last_pre_roll_ms_ = replay_gate_ms_ ? buffer_->pre_roll_ms() : 0;
     log_turn_();
 #ifdef USE_ASSIST_LIVE_DIAGNOSTICS
-    diagnostics_.finish_turn(*buffer_, arm_to_start_ms_, arm_expired_, replay_started_);
+    diagnostics_.finish_turn(*buffer_, arm_to_start_ms_, arm_expired_, replay_gate_ms_.has_value());
 #endif
     buffer_->reset_turn();
-    turn_active_ = wake_bound_ = replay_started_ = arm_pending_ = passthrough_ = false;
+    replay_gate_ms_.reset();
+    turn_active_ = wake_bound_ = arm_pending_ = passthrough_ = false;
     fast_loop_.stop();
   }
   parent_->pre_roll_complete();
@@ -348,8 +354,7 @@ bool PreRollMicrophone::history_complete() {
 
 uint32_t PreRollMicrophone::pre_roll_ms() {
   LockGuard lock(mutex_);
-  return buffer_ && turn_active_ && replay_started_ ? buffer_->pre_roll_ms()
-                                                   : last_pre_roll_ms_;
+  return buffer_ && turn_active_ && replay_gate_ms_ ? buffer_->pre_roll_ms() : last_pre_roll_ms_;
 }
 
 void PreRollMicrophone::dump_config() {

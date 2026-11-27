@@ -242,7 +242,15 @@ def test_native_microphone_adapter_callback_allocations(
     lifecycle = output.split("BEGIN retained-source lifecycle\n", 1)[1].split(
         "PASS retained-source lifecycle", 1
     )[0]
-    assert lifecycle.count("Turn wake_ms=") == 4, "exactly one summary per logical turn"
+    assert lifecycle.count("Turn wake_ms=") == 4 + diagnostics, (
+        "exactly one summary per logical turn"
+    )
+    assert "Turn wake_ms=0 replay_gate_ms=13011 " in lifecycle
+    if diagnostics:
+        assert "Turn wake_ms=0 replay_gate_ms=unknown " in lifecycle
+    assert "replay_gate_ms=10020 history_samples=512 live_samples=512 " in lifecycle, (
+        "turn log counts both queued live frames and direct muted frames"
+    )
     assert "arm_to_start_ms=1000 arm_expired=0" in output
     assert "arm_to_start_ms=1001 arm_expired=1" in output
 
@@ -379,23 +387,19 @@ def assert_stock_wake_handler(handler, stock_handler, arm):
             return {key: without_arm(item) for key, item in value.items()}
         return value
 
-    if len(handler) == 2:
+    if "else" not in handler[1]["if"]:
         normalized = without_arm(copy.deepcopy(handler[1:]))
         assert normalized == stock_handler, (
             "stock wake handler drift: default-off handler"
         )
         assert removed == {"arm": 1, "started": 1}
         return normalized
-    assert handler[1] == {
-        "if": {
-            "condition": {
-                "lambda": 'return id(reply_wake_pending) && wake_word == "Stop";'
-            },
-            "then": [{"script.execute": {"id": "assist_live_cancel_reply_wake"}}],
-        }
-    }, "pending Stop only cancels the queued restart"
-    assert len(handler) == 3
-    timer = handler[2]["if"]
+    pending_stop = handler[1]["if"]
+    assert len(handler) == 2
+    assert pending_stop["condition"] == {
+        "lambda": 'return id(reply_wake_pending) && wake_word == "Stop";'
+    }, "only a pending Stop uses the cancel-and-stop branch"
+    timer = pending_stop["else"][0]["if"]
     assert timer["condition"] == {
         "and": [
             {"lambda": "return id(reply_wake_pending);"},
@@ -452,6 +456,15 @@ def assert_stock_wake_handler(handler, stock_handler, arm):
     assert stock_timer["then"] == timer["then"][:1], (
         "stock wake handler drift: pending timer branch copies the stock branch"
     )
+    stock_stop = copy.deepcopy(stock_handler[0])
+    stock_stop_timer = stock_stop["if"]["then"][0]["if"]
+    stock_stop_busy = stock_stop_timer["else"][0]["if"]
+    stock_stop_announcement = stock_stop_busy["else"][0]["if"]
+    del stock_stop_announcement["else"]
+    assert pending_stop["then"] == [
+        {"script.execute": {"id": "assist_live_cancel_reply_wake"}},
+        stock_stop,
+    ], "stock wake handler drift: pending Stop branch copies the stock stop actions"
     return normalized
 
 
@@ -532,6 +545,22 @@ def test_stock_wake_handler_upgrade_drift_has_named_failure(tmp_path):
             changed_stock,
             "return;",
         )
+
+
+def test_pending_stop_matches_stock_and_rejects_copy_drift(tmp_path):
+    from tests.test_reply_options import reply_config
+
+    stock = stock_wake_config(tmp_path)
+    config = reply_config(ROOT / "tests/fixtures/voice-pe-pre-roll.yaml", tmp_path)
+    stock_handler = stock["micro_wake_word"]["on_wake_word_detected"]["then"]
+    handler = config["micro_wake_word"]["on_wake_word_detected"]["then"]
+    arm = "id(pre_roll_mic).wake_detected();"
+    assert_stock_wake_handler(handler, stock_handler, arm)
+
+    stop_actions = handler[1]["if"]["then"][1]["if"]
+    stop_actions["condition"] = {"switch.is_on": {"id": "master_mute_switch"}}
+    with pytest.raises(AssertionError, match="pending Stop branch copies"):
+        assert_stock_wake_handler(handler, stock_handler, arm)
 
 
 def test_resolved_pre_roll_rewires_only_va_and_preserves_stock_actions(tmp_path):
