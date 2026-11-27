@@ -177,6 +177,281 @@ def test_archive_budget_is_separate_for_each_release_file(
     assert check_release.check_release([first, second]) == []
 
 
+@pytest.mark.parametrize(
+    "content", [b"text\n", b"\x7fELFrenamed"], ids=["clean", "elf"]
+)
+def test_tar_that_is_also_a_zip_is_examined_as_both(
+    tmp_path: Path, content: bytes
+) -> None:
+    from tools.check_release import check_release
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as target:
+        target.writestr("notes.txt", b"text\n")
+    archive = tmp_path / "source.tar"
+    with tarfile.open(archive, "w") as target:
+        for name, data in (("firmware.txt", content), ("inner.zip", inner.getvalue())):
+            member = tarfile.TarInfo(f"source/{name}")
+            member.size = len(data)
+            target.addfile(member, io.BytesIO(data))
+    # The stored zip at the end gives the tar a zip end record.
+    assert zipfile.is_zipfile(archive) and tarfile.is_tarfile(archive)
+    expected = (
+        []
+        if content == b"text\n"
+        else [f"{archive.name}!source/firmware.txt: compiled image magic"]
+    )
+    assert check_release([archive]) == expected
+
+
+def small_archive(tmp_path: Path, archive_type: str, members: int, size: int) -> Path:
+    archive = tmp_path / f"source.{archive_type}"
+    if archive_type == "tar":
+        with tarfile.open(archive, "w") as target:
+            for index in range(members):
+                member = tarfile.TarInfo(f"source/{index}.txt")
+                member.size = size
+                target.addfile(member, io.BytesIO(b"a" * size))
+    else:
+        with zipfile.ZipFile(archive, "w") as target:
+            for index in range(members):
+                target.writestr(f"source/{index}.txt", b"a" * size)
+    return archive
+
+
+@pytest.mark.parametrize("archive_type", ["tar", "zip"])
+@pytest.mark.parametrize("limit", ["entries", "bytes"])
+def test_archive_headers_count_before_any_member_is_read(
+    tmp_path: Path, monkeypatch, archive_type: str, limit: str
+) -> None:
+    from tools import check_release
+
+    archive = small_archive(tmp_path, archive_type, 20, 1 << 16)
+    if limit == "entries":
+        monkeypatch.setattr(check_release, "ARCHIVE_ENTRY_LIMIT", 5)
+    else:
+        monkeypatch.setattr(check_release, "ARCHIVE_LIMIT_BYTES", 5 << 16)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("member read before the header check")
+
+    monkeypatch.setattr(check_release, "check_member", refuse)
+    message = "archive entry limit" if limit == "entries" else "archive expansion limit"
+    assert check_release.check_release([archive]) == [f"{archive.name}: {message}"]
+
+
+def header_only_zip(
+    path: Path, entries: int, file_size: int = 0, extra: bytes = b""
+) -> None:
+    local = bytearray()
+    central = bytearray()
+    for index in range(entries):
+        name = f"{index}.txt".encode()
+        central += struct.pack(
+            "<4s6H3I5H2I",
+            b"PK\x01\x02",
+            20,
+            20,
+            0,
+            0,
+            0,
+            0x21,
+            0,
+            0,
+            file_size,
+            len(name),
+            len(extra),
+            0,
+            0,
+            0,
+            0,
+            len(local),
+        )
+        central += name + extra
+        local += struct.pack(
+            "<4s5H3I2H", b"PK\x03\x04", 20, 0, 0, 0, 0x21, 0, 0, 0, len(name), 0
+        )
+        local += name
+    end = struct.pack(
+        "<4s4H2IH",
+        b"PK\x05\x06",
+        0,
+        0,
+        entries,
+        entries,
+        len(central),
+        len(local),
+        0,
+    )
+    path.write_bytes(bytes(local + central + end))
+
+
+def test_header_only_zip_stops_at_the_entry_limit_in_bounded_memory(
+    tmp_path: Path,
+) -> None:
+    import tracemalloc
+
+    from tools.check_release import check_release
+
+    archive = tmp_path / "source.zip"
+    header_only_zip(archive, 60_000)
+    with zipfile.ZipFile(archive) as target:
+        assert len(target.infolist()) == 60_000
+    tracemalloc.start()
+    try:
+        failures = check_release([archive])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert failures == [f"{archive.name}: archive entry limit"]
+    assert peak < 4 << 20
+
+
+def test_zip_central_directory_size_is_checked_before_parsing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tools import check_release
+
+    archive = small_archive(tmp_path, "zip", 100, 1)
+    monkeypatch.setattr(
+        check_release, "ARCHIVE_METADATA_LIMIT_BYTES", 1 << 10, raising=False
+    )
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("central directory parsed before the size check")
+
+    monkeypatch.setattr(zipfile.ZipFile, "__init__", refuse)
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}: archive metadata limit"
+    ]
+
+
+def test_tar_extended_header_is_bounded_before_parsing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import tracemalloc
+
+    from tools import check_release
+
+    archive = tmp_path / "source.tar.gz"
+    with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as target:
+        member = tarfile.TarInfo("source/notes.txt")
+        member.pax_headers = {"comment": "a" * (32 << 20)}
+        target.addfile(member, io.BytesIO())
+    monkeypatch.setattr(
+        check_release, "ARCHIVE_METADATA_LIMIT_BYTES", 1 << 20, raising=False
+    )
+    tracemalloc.start()
+    try:
+        failures = check_release.check_release([archive])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert failures == [f"{archive.name}: archive metadata limit"]
+    assert peak < 8 << 20
+
+
+def tar_header(name: str, kind: bytes, size: int, sparse_size: int = -1) -> bytes:
+    member = tarfile.TarInfo(name)
+    member.type = kind
+    member.size = size
+    block = bytearray(member.tobuf(format=tarfile.GNU_FORMAT))
+    if sparse_size >= 0:
+        # Old GNU sparse header: the expanded size is at offset 483.
+        block[483:495] = b"%011o\0" % sparse_size
+        block[148:156] = b" " * 8
+        block[148:156] = b"%06o\0 " % sum(block)
+    return bytes(block)
+
+
+def test_tar_traversal_is_metered_before_any_member_is_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import gzip
+
+    from tools import check_release
+
+    # The stored data is 64 MiB, but the member declares an expanded size of 0.
+    archive = tmp_path / "source.tar.gz"
+    with gzip.open(archive, "wb", compresslevel=1) as target:
+        target.write(tar_header("source/sparse.txt", b"S", 64 << 20, 0))
+        for _ in range(64):
+            target.write(b"\0" * (1 << 20))
+        target.write(b"\0" * 1024)
+    monkeypatch.setattr(check_release, "ARCHIVE_LIMIT_BYTES", 1 << 20)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("member read before the traversal check")
+
+    monkeypatch.setattr(check_release, "check_member", refuse)
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}: archive expansion limit"
+    ]
+
+
+def test_tar_declared_size_counts_for_each_member_type(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tools import check_release
+
+    archive = tmp_path / "source.tar"
+    archive.write_bytes(
+        tar_header("source/unknown", b"Z", 2 << 20) + b"\0" * ((2 << 20) + 1024)
+    )
+    monkeypatch.setattr(check_release, "ARCHIVE_LIMIT_BYTES", 1 << 20)
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}: archive expansion limit"
+    ]
+
+
+def test_tar_extension_headers_count_as_entries(tmp_path: Path, monkeypatch) -> None:
+    from tools import check_release
+
+    archive = tmp_path / "source.tar"
+    with tarfile.open(archive, "w", format=tarfile.PAX_FORMAT) as target:
+        for index in range(3):
+            member = tarfile.TarInfo(f"source/{index}-" + "a" * 150)
+            target.addfile(member, io.BytesIO())
+    assert check_release.check_release([archive]) == []
+    # Each member has a pax header and a ustar header.
+    monkeypatch.setattr(check_release, "ARCHIVE_ENTRY_LIMIT", 5)
+    assert check_release.check_release([archive]) == [
+        f"{archive.name}: archive entry limit"
+    ]
+
+
+def test_tar_extension_header_chain_is_bounded(tmp_path: Path) -> None:
+    from tools.check_release import check_release
+
+    record = b"13 comment=a\n"
+    pax = tar_header("pax", tarfile.XHDTYPE, len(record))
+    pax += record + b"\0" * (512 - len(record))
+    archive = tmp_path / "source.tar"
+    archive.write_bytes(
+        pax * 2000 + tar_header("source/notes.txt", tarfile.REGTYPE, 0) + b"\0" * 1024
+    )
+    assert check_release([archive]) == [f"{archive.name}: archive header limit"]
+
+
+def test_zip_extra_field_count_is_bounded(tmp_path: Path) -> None:
+    from tools.check_release import check_release
+
+    archive = tmp_path / "source.zip"
+    header_only_zip(archive, 1, 0xFFFFFFFF, b"\x99\x99\0\0" * 16_000)
+    assert check_release([archive]) == [f"{archive.name}: archive header limit"]
+
+
+def test_zip_with_two_zip64_fields_is_refused(tmp_path: Path) -> None:
+    from tools.check_release import check_release
+
+    archive = tmp_path / "source.zip"
+    zip64 = struct.pack("<HHQ", 1, 8, 10) + struct.pack("<HHQ", 1, 8, 20)
+    header_only_zip(archive, 1, 0xFFFFFFFF, zip64)
+    assert check_release([archive]) == [
+        f"{archive.name}: unreadable archive (BadZipFile)"
+    ]
+
+
 def test_source_passes_and_failures_are_collected(tmp_path: Path) -> None:
     from tools.check_release import check_release
 

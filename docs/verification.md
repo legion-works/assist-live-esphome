@@ -2390,3 +2390,47 @@ Result: `ruff format --check`, `ruff check`, `actionlint`, and `mypy` exited 0.
 `pytest` gave `309 passed` on Python 3.14 and on Python 3.12.
 The event vectors, the bootstrap check, the source-only check, and the two Gitleaks checks were satisfactory.
 ESPHome configuration checks and compiles did not run. Run `task config`, `task compile`, `task compile-pre-roll`, and `task compile-probe` before a release.
+
+## Release check: archive headers and files with two archive formats (2026-11-27)
+
+A review of the release checks found problems in the archive check.
+This record gives the new behavior and the test results.
+
+The source-only check examines each archive format that it finds in a file.
+A finding in one format gives a refusal.
+
+The check counts the archive headers before it reads a member.
+For a zip archive, the check reads the central directory one entry at a time.
+It counts each entry and the declared size of each member against the limits of the release file.
+This occurs before `zipfile` reads the central directory.
+
+The check also examines the `extra` fields of each entry.
+An entry with more than 64 `extra` fields gives the refusal `archive header limit`.
+An entry with more than one ZIP64 field gives a refusal.
+A field that is longer than the `extra` data also gives a refusal.
+
+For a tar archive, the check first reads all headers. Then it reads the headers again with the members.
+Each 512-byte header counts as an entry. This includes the pax and GNU extended headers.
+The declared size of each member counts against the limit, for all member types.
+
+The check also counts each byte of the uncompressed stream that the tar reader reads or skips.
+This count has the limit of the release file. The check examines it before each read and before each skip.
+A member with more than 16 headers gives the refusal `archive header limit`.
+
+The ZIP central directory and the TAR headers have a limit of 64 MiB for each release file.
+The check examines the size of each header read before the read.
+The refusal is `archive metadata limit`.
+A zip archive with only headers and 60,000 empty members stops at `archive entry limit`.
+The peak memory of that check was less than 4 MiB.
+
+The check examined the `git archive` outputs of this repository in the tar, tar.gz, and zip formats.
+The previous code and the new code gave no findings.
+The check reads a tar archive two times. Thus the check decompresses a compressed tar archive one more time.
+
+The new tests gave failures on the previous code and are satisfactory on the new code.
+A scratch mutation of each safeguard gave test failures.
+
+Result: `ruff format --check`, `ruff check`, `actionlint`, and `mypy` exited 0.
+`pytest` gave `324 passed` on Python 3.14 and on Python 3.12.
+The event vectors, the bootstrap check, the source-only check, the two Gitleaks checks, and the public-tree check were satisfactory.
+ESPHome configuration checks and compiles did not run. Run `task config`, `task compile`, `task compile-pre-roll`, and `task compile-probe` before a release.
