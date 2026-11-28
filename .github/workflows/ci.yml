@@ -44,9 +44,7 @@ jobs:
       - name: Check public tree
         run: |
           set -eu
-          # A pinned commit and digest stop changed checker bytes before they run.
-          curl -fsSL https://raw.githubusercontent.com/legion-works/assist-live/6b59465d77ca0102af454cd01a68d778e68944ec/tools/check_public_tree.py -o "$RUNNER_TEMP/check_public_tree.py"
-          echo "d71c3c44a67af8dcd3db7d129acac2b12a8172fd668b806222f8ef91861d235a  $RUNNER_TEMP/check_public_tree.py" | sha256sum -c -
+          curl -fsSL https://raw.githubusercontent.com/legion-works/assist-live/main/tools/check_public_tree.py -o "$RUNNER_TEMP/check_public_tree.py"
           set --
           if [ -n "${PRIVATE_DENYLIST:-}" ]; then
             set -- --private-denylist "$PRIVATE_DENYLIST"

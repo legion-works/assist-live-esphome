@@ -2525,3 +2525,9 @@ The `Stop` mutation gave `1 failed` at the start count assertion. The pass-throu
 The subsequent test of the copied branch found a changed announcement step: `1 failed`.
 The full suites gave `351 passed` with CPython 3.14 and `351 passed` with CPython 3.12.
 The four ESPHome compiles gave no new warnings.
+
+## Public-tree check
+
+CI downloads the public-tree checker from `main` in `legion-works/assist-live`.
+The test runs the workflow command with a test download. It examines the history and denylist options that the checker gets.
+The CI tests gave `37 passed`. `actionlint`, Ruff, and mypy gave exit code 0.

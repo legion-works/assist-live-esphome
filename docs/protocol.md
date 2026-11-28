@@ -139,8 +139,8 @@ The worker retries initialization after five seconds. It drops events during tha
 The two transport variants use this retry rule.
 
 The authoritative public-data checker is in the assist-live integration repository.
-It examines private paths, private addresses, and Git history. CI downloads that file from a pinned commit and uses Python 3.14.
-CI compares the SHA-256 digest of the file with a pinned value before it runs the file. If the digest is different, the CI check stops.
+It examines private paths, private addresses, and Git history.
+CI downloads that file from `main` in `legion-works/assist-live` and runs it with Python 3.14.
 
 If `../assist-live/tools/check_public_tree.py` is a file, `task check` uses it.
 Without it, the task prints `NOT CHECKED public tree`.

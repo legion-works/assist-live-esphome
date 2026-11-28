@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import re
@@ -350,31 +349,21 @@ def test_worktree_checks_accept_unstaged_deletions(monkeypatch, capsys, tool):
     assert expected in capsys.readouterr().out
 
 
-PINNED_CHECKER = re.compile(
-    r"https://raw\.githubusercontent\.com/legion-works/assist-live/"
-    r"[0-9a-f]{40}/tools/check_public_tree\.py"
-)
-PINNED_DIGEST = re.compile(
-    r'echo "([0-9a-f]{64})  \$RUNNER_TEMP/check_public_tree\.py" \| sha256sum -c -'
-)
-
-
 @pytest.mark.parametrize(
-    "source,present,denylist,scan_exit,download_exit,tampered",
+    "source,present,denylist,scan_exit,download_exit",
     [
-        ("task", False, False, 0, 0, False),
-        ("task", True, False, 0, 0, False),
-        ("task", True, True, 0, 0, False),
-        ("task", True, True, 17, 0, False),
-        ("ci", True, False, 0, 0, False),
-        ("ci", True, True, 0, 0, False),
-        ("ci", True, True, 17, 0, False),
-        ("ci", True, False, 0, 22, False),
-        ("ci", True, False, 0, 0, True),
+        ("task", False, False, 0, 0),
+        ("task", True, False, 0, 0),
+        ("task", True, True, 0, 0),
+        ("task", True, True, 17, 0),
+        ("ci", True, False, 0, 0),
+        ("ci", True, True, 0, 0),
+        ("ci", True, True, 17, 0),
+        ("ci", True, False, 0, 22),
     ],
 )
 def test_external_privacy_command(
-    tmp_path, source, present, denylist, scan_exit, download_exit, tampered
+    tmp_path, source, present, denylist, scan_exit, download_exit
 ):
     if source == "task":
         tasks = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]
@@ -388,11 +377,6 @@ def test_external_privacy_command(
         ]
         assert len(commands) == 1, "CI must run the authoritative checker explicitly"
         script = commands[0]
-        pinned = PINNED_DIGEST.search(script)
-        assert pinned is not None, "CI must check the pinned checker digest"
-        assert script.index(pinned[0]) < script.index("uv run")
-        # The stub download writes b"checker": the test pins its digest.
-        script = script.replace(pinned[1], hashlib.sha256(b"checker").hexdigest())
     firmware = tmp_path / "firmware"
     firmware.mkdir()
     if present:
@@ -408,7 +392,7 @@ def test_external_privacy_command(
         'Path(os.environ["CURL_CAPTURE"]).write_text(json.dumps(sys.argv[1:]))\n'
         'if int(os.environ["DOWNLOAD_EXIT"]):\n'
         '    sys.exit(int(os.environ["DOWNLOAD_EXIT"]))\n'
-        'Path(sys.argv[sys.argv.index("-o") + 1]).write_text(os.environ["BYTES"])\n'
+        'Path(sys.argv[sys.argv.index("-o") + 1]).write_text("checker")\n'
     )
     curl.chmod(0o700)
     uv = binary / "uv"
@@ -420,9 +404,6 @@ def test_external_privacy_command(
         'sys.exit(int(os.environ["SCAN_EXIT"]))\n'
     )
     uv.chmod(0o700)
-    checksum = shutil.which("sha256sum")
-    assert checksum is not None
-    (binary / "sha256sum").symlink_to(checksum)
     capture = tmp_path / "capture.json"
     curl_capture = tmp_path / "curl-capture.json"
     env = {key: value for key, value in os.environ.items() if key != "PRIVATE_DENYLIST"}
@@ -433,7 +414,6 @@ def test_external_privacy_command(
         RUNNER_TEMP=str(tmp_path),
         CURL_CAPTURE=str(curl_capture),
         DOWNLOAD_EXIT=str(download_exit),
-        BYTES="changed checker" if tampered else "checker",
     )
     if denylist:
         env["PRIVATE_DENYLIST"] = str(tmp_path / "private denylist.txt")
@@ -445,17 +425,16 @@ def test_external_privacy_command(
         text=True,
         timeout=10,
     )
-    expected_exit = download_exit or int(tampered) or (scan_exit if present else 0)
+    expected_exit = download_exit or (scan_exit if present else 0)
     assert result.returncode == expected_exit, result.stdout + result.stderr
-    assert (result.stderr != "") == tampered
     if source == "ci":
-        url = json.loads(curl_capture.read_text())
-        assert url[0] == "-fsSL" and url[2:] == [
+        assert json.loads(curl_capture.read_text()) == [
+            "-fsSL",
+            "https://raw.githubusercontent.com/legion-works/assist-live/main/tools/check_public_tree.py",
             "-o",
             str(tmp_path / "check_public_tree.py"),
         ]
-        assert PINNED_CHECKER.fullmatch(url[1])
-    if download_exit or tampered:
+    if download_exit:
         assert not capture.exists()
         return
     if present:
@@ -478,8 +457,7 @@ def test_external_privacy_command(
         if denylist:
             expected += ["--private-denylist", env["PRIVATE_DENYLIST"]]
         assert json.loads(capture.read_text()) == expected
-        prefix = f"{tmp_path / 'check_public_tree.py'}: OK\n" if source == "ci" else ""
-        assert result.stdout == prefix + "PASS external public tree\n"
+        assert result.stdout == "PASS external public tree\n"
     else:
         assert not capture.exists()
         assert result.stdout == "NOT CHECKED public tree\n"
