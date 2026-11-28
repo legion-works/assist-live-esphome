@@ -2513,3 +2513,15 @@ The microphone reported a replay gate before the listening hook.
 The tests found the two mutations at the same assertions.
 One change let `Stop` start a turn in `IDLE`. The other set `passthrough_reached` when the replay queue became empty.
 These checks use native C++ and resolved YAML. They do not use a device.
+
+## Stop during a reply restart: record correction (2026-11-28)
+
+This record adds the date and the accurate results to the record "Stop during a reply restart and turn diagnostics".
+We made and checked the changes on 2026-11-27 and 2026-11-28 (UTC).
+At base `783dae5`, the three selected tests gave `3 failed`.
+After the change, the selected handler, diagnostics, and pre-roll tests gave `56 passed`.
+
+The `Stop` mutation gave `1 failed` at the start count assertion. The pass-through mutation gave `1 failed` at the snapshot assertion.
+The subsequent test of the copied branch found a changed announcement step: `1 failed`.
+The full suites gave `351 passed` with CPython 3.14 and `351 passed` with CPython 3.12.
+The four ESPHome compiles gave no new warnings.

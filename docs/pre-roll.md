@@ -59,6 +59,7 @@ After an ESPHome upgrade, the resolved-config and generated-code checks must giv
 ## Turn selection
 
 The overlay keeps the stock mute, timer, Stop, standalone announcement, and wake-sound decisions.
+A `Stop` while a reply restart waits, also during the wake sound, cancels the restart. It does not go to the start step for `IDLE`, so it does not start a turn. It keeps the applicable stock stops: it stops a ringing timer, the voice assistant, and an announcement.
 The reply-window and reply-restart substitutions each default to `'false'`, also in this overlay.
 Keep them off until device tests give satisfactory results.
 
